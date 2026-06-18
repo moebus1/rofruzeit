@@ -592,7 +592,10 @@ async function renderDashboard(){
   const todayBreaks  = allBreaks.filter(b=>b.date===todayStr);
   const weekBrutto   = allEntries.reduce((a,e)=>a+(e.duration_minutes||0),0);
   const weekBreakMins= allBreaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
-  const weekMins     = Math.max(0, weekBrutto-weekBreakMins);
+  const weekMins = allEntries.reduce(function(sum,e){
+    const eBreaks=allBreaks.filter(function(b){return b.employee_id===e.employee_id&&b.date===e.date;});
+    return sum+calcNettoMins(e,eBreaks);
+  },0);
 
   let profileMap={};
   employees.forEach(p=>{ profileMap[p.id]=p; });
@@ -631,9 +634,9 @@ async function renderDashboard(){
       <table><thead><tr><th>Mitarbeiter</th><th>Datum</th><th>Arbeitszeit</th><th>Pause</th><th>Brutto</th><th>Netto</th></tr></thead><tbody>
       ${allEntries.slice(0,10).map(e=>{
         const emp=profileMap[e.employee_id];
-        const eBreaks=allBreaks.filter(b=>b.employee_id===e.employee_id&&b.date===e.date&&b.pause_end);
-        const breakMins=eBreaks.reduce((a,b)=>a+(b.duration_minutes||0),0);
-        const netMins=Math.max(0,(e.duration_minutes||0)-breakMins);
+        const eBreaks=allBreaks.filter(b=>b.employee_id===e.employee_id&&b.date===e.date);
+        const breakMins=eBreaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
+        const netMins=calcNettoMins(e,eBreaks);
         const onBreak=e.date===todayStr&&allBreaks.find(b=>b.employee_id===e.employee_id&&!b.pause_end);
         const status=e.clock_out
           ? e.clock_in?.slice(0,5)+' – '+e.clock_out?.slice(0,5)
@@ -717,17 +720,20 @@ async function renderTimerPage(){
     </div>
 
     ${todayEntries.length||isClockedIn?`<div class="card"><div class="card-title">📋 Heutige Buchungen</div>
-      <table><thead><tr><th>Beginn</th><th>Ende</th><th>Dauer</th><th>Pause</th></tr></thead><tbody>
+      <table><thead><tr><th>Beginn</th><th>Ende</th><th>Brutto</th><th>Pause</th><th>Netto</th></tr></thead><tbody>
       ${[...todayEntries,...(isClockedIn?[openEntry]:[])]
         .sort((a,b)=>a.clock_in?.localeCompare(b.clock_in))
         .map(e=>{
-          const br=todayBreaks.filter(b=>b.pause_start>=e.clock_in&&(!e.clock_out||b.pause_start<=e.clock_out));
-          const bMins=br.reduce((a,b)=>a+(b.duration_minutes||0),0);
-          return `<tr>
-            <td class="text-mono">${e.clock_in?.slice(0,5)}</td>
-            <td class="text-mono">${e.clock_out?.slice(0,5)||'<span class="badge badge-green">aktiv</span>'}</td>
-            <td class="text-mono">${e.clock_out?fmtMins(e.duration_minutes||0):'—'}</td>
-            <td class="text-mono">${bMins>0?fmtMins(bMins):'—'}</td></tr>`;
+          const entryBreaks=todayBreaks.filter(b=>b.pause_start>=(e.clock_in||'00:00'));
+          const bMins=entryBreaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
+          const netMins=calcNettoMins(e,entryBreaks);
+          return '<tr>'
+            +'<td class="text-mono">'+(e.clock_in?.slice(0,5)||'')+'</td>'
+            +'<td class="text-mono">'+(e.clock_out?.slice(0,5)||'<span class="badge badge-green">aktiv</span>')+'</td>'
+            +'<td class="text-mono">'+(e.clock_out?fmtMins(e.duration_minutes||0):'—')+'</td>'
+            +'<td class="text-mono">'+(bMins>0?fmtMins(bMins):'—')+'</td>'
+            +'<td class="text-mono"><strong style="color:var(--g700)">'+(e.clock_out?fmtMins(netMins):'—')+'</strong></td>'
+            +'</tr>';
         }).join('')}
       </tbody></table></div>`:''}`;
   startTimerDisplay();
@@ -998,9 +1004,9 @@ async function renderMyTimes(){
       ${entries.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Einträge.</p>':
       '<table><thead><tr><th>Datum</th><th>Beginn</th><th>Ende</th><th>Brutto</th><th>Pause</th><th>Netto</th><th>Notiz</th></tr></thead><tbody>'
       +entries.map(e=>{
-        const dayBreaks=breaks.filter(b=>b.date===e.date&&b.pause_end);
-        const breakMins=dayBreaks.reduce((a,b)=>a+(b.duration_minutes||0),0);
-        const netMins=Math.max(0,(e.duration_minutes||0)-breakMins);
+        const dayBreaks=breaks.filter(b=>b.date===e.date);
+        const breakMins=dayBreaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
+        const netMins=calcNettoMins(e,dayBreaks);
         const breakDetail=dayBreaks.length>0
           ? dayBreaks.map(b=>b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5)).join(', ')
           : '—';
@@ -1824,7 +1830,9 @@ function openExportModal(){
         const bb=allExportBreaks.filter(b=>b.employee_id===emp.id&&b.pause_end);
         const brutto=ee.reduce((a,e)=>a+(e.duration_minutes||0),0);
         const pauseMins=bb.reduce((a,b)=>a+(b.duration_minutes||0),0);
-        const netto=Math.max(0,brutto-pauseMins);
+        const netto=ee.reduce(function(sum,e){
+          return sum+calcNettoMins(e,allExportBreaks.filter(function(b){return b.employee_id===emp.id&&b.date===e.date;}));
+        },0);
         rows.push([emp.name,emp.department||'',emp.employee_type==='account'?'Festanstellung':'Minijob',
           ee.length,Math.round(brutto/60*100)/100,pauseMins,Math.round(netto/60*100)/100,'']);
       });
@@ -1836,7 +1844,7 @@ function openExportModal(){
         const emp=employees.find(x=>x.id===e.employee_id);
         const bb=allExportBreaks.filter(b=>b.employee_id===e.employee_id&&b.date===e.date&&b.pause_end);
         const pauseMins=bb.reduce((a,b)=>a+(b.duration_minutes||0),0);
-        const netto=Math.max(0,(e.duration_minutes||0)-pauseMins);
+        const netto=calcNettoMins(e,allExportBreaks.filter(function(b){return b.employee_id===e.employee_id&&b.date===e.date;}));
         rows.push([emp?.name||'?',new Date(e.date).toLocaleDateString('de-DE'),
           e.clock_in?.slice(0,5)||'',e.clock_out?.slice(0,5)||'',
           e.duration_minutes||0,pauseMins,netto,e.note||'']);
@@ -1892,9 +1900,17 @@ async function handleQRStamp(){
   const {data:open}=await sb.from('time_entries').select('*')
     .eq('employee_id',currentUser.id).eq('date',todayStr).is('clock_out',null).single();
   if(open){
-    // Clock OUT
+    // Clock OUT – first close any open breaks
     const now=new Date();
-    const clockOut=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const clockOut=pad(now.getHours())+':'+pad(now.getMinutes());
+    // Close open break if exists
+    const {data:openBreak}=await sb.from('break_entries').select('*')
+      .eq('employee_id',currentUser.id).eq('date',todayStr).is('pause_end',null).maybeSingle();
+    if(openBreak){
+      const bDur=Math.round((now-new Date(todayStr+'T'+openBreak.pause_start))/60000);
+      await sb.from('break_entries').update({pause_end:clockOut,duration_minutes:Math.max(1,bDur)}).eq('id',openBreak.id);
+    }
+    // Calculate duration = clock_in to now (gross), breaks will be subtracted for netto display
     const dur=Math.round((now-new Date(todayStr+'T'+open.clock_in))/60000);
     await sb.from('time_entries').update({clock_out:clockOut,duration_minutes:dur}).eq('id',open.id);
     showStampFeedback('ausgestempelt','Du hast dich um '+clockOut+' Uhr ausgestempelt. Schönen Feierabend! 👋',false);
@@ -2245,6 +2261,26 @@ async function applyRecurring(yr, mo){
   }
   alert(`✅ ${count} Schichten aus Regelzeiten für ${MONTHS[month-1]} ${year} eingetragen.`);
   navigateTo('shifts');
+}
+
+// ── SAFE NETTO CALC ──────────────────────────────────────────────────────────
+// Calculates netto minutes: brutto minus breaks, but breaks are capped at time
+// within the clock_in/clock_out window to prevent negative netto time
+function calcNettoMins(entry, breaks){
+  const bruttoMins = entry.duration_minutes||0;
+  if(!breaks||breaks.length===0) return bruttoMins;
+  // Only count breaks that overlap with the entry's time window
+  let totalBreak=0;
+  breaks.filter(function(b){return b.pause_end;}).forEach(function(b){
+    if(!entry.clock_in) return;
+    // Break must start after clock_in
+    if(b.pause_start < entry.clock_in) return;
+    // If clock_out exists, break must start before clock_out
+    if(entry.clock_out && b.pause_start >= entry.clock_out) return;
+    totalBreak += (b.duration_minutes||0);
+  });
+  // Netto can never be less than 0 or more than brutto
+  return Math.max(0, Math.min(bruttoMins, bruttoMins-totalBreak));
 }
 
 // ── BAVARIAN HOLIDAYS ────────────────────────────────────────────────────────
