@@ -641,9 +641,9 @@ async function renderDashboard(){
         const status=e.clock_out
           ? e.clock_in?.slice(0,5)+' – '+e.clock_out?.slice(0,5)
           : onBreak ? '☕ Pause seit '+onBreak.pause_start.slice(0,5) : '🟢 seit '+e.clock_in?.slice(0,5);
-        const breakLabel=eBreaks.length>0
-          ? eBreaks.map(b=>b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5)).join(', ')
-          : '—';
+        const breakLabel=eBreaks.filter(b=>b.pause_end).length>0
+          ? eBreaks.filter(b=>b.pause_end).map(b=>b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5)).join(', ')
+          : (eBreaks.find(b=>!b.pause_end)?'läuft…':'—');
         return '<tr>'
           +'<td><strong>'+(emp?.name||'?')+'</strong><br><span class="text-sm">'+(emp?.department||'')+'</span></td>'
           +'<td>'+new Date(e.date).toLocaleDateString('de-DE')+'</td>'
