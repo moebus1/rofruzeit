@@ -590,9 +590,9 @@ async function renderDashboard(){
   const todayEntries = todayEntriesRes.data||[];
   const allBreaks    = todayBreaksRes.data||[];
   const todayBreaks  = allBreaks.filter(b=>b.date===todayStr);
-  const weekMins     = allEntries.reduce((a,e)=>a+(e.duration_minutes||0),0);
-  // Also fetch this week's breaks for accurate netto calc
-  const weekBreakMins = todayBreaks.reduce((a,b)=>a+(b.duration_minutes||0),0);
+  const weekBrutto   = allEntries.reduce((a,e)=>a+(e.duration_minutes||0),0);
+  const weekBreakMins= allBreaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
+  const weekMins     = Math.max(0, weekBrutto-weekBreakMins);
 
   let profileMap={};
   employees.forEach(p=>{ profileMap[p.id]=p; });
@@ -628,12 +628,27 @@ async function renderDashboard(){
     </div>
     <div class="card">
       <div class="card-title">📋 Letzte Zeiteinträge</div>
-      <table><thead><tr><th>Mitarbeiter</th><th>Datum</th><th>Arbeitszeit</th><th>Dauer</th></tr></thead><tbody>
-      ${allEntries.slice(0,8).map(e=>{
+      <table><thead><tr><th>Mitarbeiter</th><th>Datum</th><th>Arbeitszeit</th><th>Pause</th><th>Brutto</th><th>Netto</th></tr></thead><tbody>
+      ${allEntries.slice(0,10).map(e=>{
         const emp=profileMap[e.employee_id];
-        return `<tr><td>${emp?.name||'?'}</td><td>${new Date(e.date).toLocaleDateString('de-DE')}</td>
-          <td class="text-mono">${e.clock_in?.slice(0,5)} – ${e.clock_out?.slice(0,5)||'läuft…'}</td>
-          <td class="text-mono">${fmtMins(e.duration_minutes||0)}</td></tr>`;
+        const eBreaks=allBreaks.filter(b=>b.employee_id===e.employee_id&&b.date===e.date&&b.pause_end);
+        const breakMins=eBreaks.reduce((a,b)=>a+(b.duration_minutes||0),0);
+        const netMins=Math.max(0,(e.duration_minutes||0)-breakMins);
+        const onBreak=e.date===todayStr&&allBreaks.find(b=>b.employee_id===e.employee_id&&!b.pause_end);
+        const status=e.clock_out
+          ? e.clock_in?.slice(0,5)+' – '+e.clock_out?.slice(0,5)
+          : onBreak ? '☕ Pause seit '+onBreak.pause_start.slice(0,5) : '🟢 seit '+e.clock_in?.slice(0,5);
+        const breakLabel=eBreaks.length>0
+          ? eBreaks.map(b=>b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5)).join(', ')
+          : '—';
+        return '<tr>'
+          +'<td><strong>'+(emp?.name||'?')+'</strong><br><span class="text-sm">'+(emp?.department||'')+'</span></td>'
+          +'<td>'+new Date(e.date).toLocaleDateString('de-DE')+'</td>'
+          +'<td class="text-mono" style="font-size:12px">'+status+'</td>'
+          +'<td style="font-size:11px;color:var(--s500)">'+breakLabel+'</td>'
+          +'<td class="text-mono">'+fmtMins(e.duration_minutes||0)+'</td>'
+          +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netMins)+'</strong></td>'
+          +'</tr>';
       }).join('')}</tbody></table>
     </div>`;
 }
@@ -647,7 +662,8 @@ async function renderTimerPage(){
   ]);
   const shift = shiftRes.data;
   const todayEntries = (entriesRes.data||[]).filter(e=>e.clock_out);
-  const totalToday = todayEntries.reduce((a,e)=>a+(e.duration_minutes||0),0);
+  const totalTodayBrutto = todayEntries.reduce((a,e)=>a+(e.duration_minutes||0),0);
+  const totalToday = Math.max(0, totalTodayBrutto - totalBreakMins);
   const openEntry = (entriesRes.data||[]).find(e=>!e.clock_out);
   const isClockedIn = !!openEntry;
   const openBreak = (breakRes.data||[]).find(b=>!b.pause_end);
@@ -1780,14 +1796,16 @@ function openExportModal(){
     const type=document.getElementById('ex-type').value;
     if(!from||!to){ alert('Bitte Zeitraum wählen.'); return; }
 
-    const [empRes,entriesRes,accountsRes]=await Promise.all([
+    const [empRes,entriesRes,accountsRes,breakRes]=await Promise.all([
       sb.from('profiles').select('*').eq('role','employee'),
       sb.from('time_entries').select('*').gte('date',from).lte('date',to),
-      sb.from('time_accounts').select('*')
+      sb.from('time_accounts').select('*'),
+      sb.from('break_entries').select('*').gte('date',from).lte('date',to)
     ]);
     const employees=empRes.data||[];
     const entries=entriesRes.data||[];
     const accounts=accountsRes.data||[];
+    const allExportBreaks=breakRes.data||[];
 
     // Build CSV
     const rows=[];
@@ -1799,21 +1817,29 @@ function openExportModal(){
     rows.push(['']);
 
     if(type==='hours'||type==='both'){
-      rows.push(['ARBEITSSTUNDEN','','','','','']);
-      rows.push(['Name','Abteilung','Typ','Buchungen','Gearbeitete Stunden','Gearbeitete Minuten']);
+      rows.push(['ARBEITSSTUNDEN','','','','','','','']);
+      rows.push(['Name','Abteilung','Typ','Buchungen','Brutto-Stunden','Pause-Minuten','Netto-Stunden','']);
       employees.forEach(emp=>{
         const ee=entries.filter(e=>e.employee_id===emp.id);
-        const mins=ee.reduce((a,e)=>a+(e.duration_minutes||0),0);
-        rows.push([emp.name,emp.department||'',emp.employee_type==='account'?'Festanstellung':'Minijob',ee.length,Math.round(mins/60*100)/100,mins]);
+        const bb=allExportBreaks.filter(b=>b.employee_id===emp.id&&b.pause_end);
+        const brutto=ee.reduce((a,e)=>a+(e.duration_minutes||0),0);
+        const pauseMins=bb.reduce((a,b)=>a+(b.duration_minutes||0),0);
+        const netto=Math.max(0,brutto-pauseMins);
+        rows.push([emp.name,emp.department||'',emp.employee_type==='account'?'Festanstellung':'Minijob',
+          ee.length,Math.round(brutto/60*100)/100,pauseMins,Math.round(netto/60*100)/100,'']);
       });
       rows.push(['']);
-      // Detail rows
-      rows.push(['EINZELBUCHUNGEN','','','','','']);
-      rows.push(['Name','Datum','Beginn','Ende','Minuten','Notiz']);
+      rows.push(['EINZELBUCHUNGEN','','','','','','','']);
+      rows.push(['Name','Datum','Beginn','Ende','Brutto (min)','Pause (min)','Netto (min)','Notiz']);
       const sorted=[...entries].sort((a,b)=>a.date.localeCompare(b.date));
       sorted.forEach(e=>{
         const emp=employees.find(x=>x.id===e.employee_id);
-        rows.push([emp?.name||'?',new Date(e.date).toLocaleDateString('de-DE'),e.clock_in?.slice(0,5)||'',e.clock_out?.slice(0,5)||'',e.duration_minutes||0,e.note||'']);
+        const bb=allExportBreaks.filter(b=>b.employee_id===e.employee_id&&b.date===e.date&&b.pause_end);
+        const pauseMins=bb.reduce((a,b)=>a+(b.duration_minutes||0),0);
+        const netto=Math.max(0,(e.duration_minutes||0)-pauseMins);
+        rows.push([emp?.name||'?',new Date(e.date).toLocaleDateString('de-DE'),
+          e.clock_in?.slice(0,5)||'',e.clock_out?.slice(0,5)||'',
+          e.duration_minutes||0,pauseMins,netto,e.note||'']);
       });
       rows.push(['']);
     }
