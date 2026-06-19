@@ -676,14 +676,14 @@ async function renderTimerPage(){
   ]);
   const shift = shiftRes.data;
   const todayEntries = (entriesRes.data||[]).filter(e=>e.clock_out);
-  const totalTodayBrutto = todayEntries.reduce((a,e)=>a+(e.duration_minutes||0),0);
-  const totalToday = Math.max(0, totalTodayBrutto - totalBreakMins);
   const openEntry = (entriesRes.data||[]).find(e=>!e.clock_out);
   const isClockedIn = !!openEntry;
   const openBreak = (breakRes.data||[]).find(b=>!b.pause_end);
   const isOnBreak = !!openBreak;
   const todayBreaks = (breakRes.data||[]).filter(b=>b.pause_end);
   const totalBreakMins = todayBreaks.reduce((a,b)=>a+(b.duration_minutes||0),0);
+  const totalTodayBrutto = todayEntries.reduce((a,e)=>a+(e.duration_minutes||0),0);
+  const totalToday = Math.max(0, totalTodayBrutto - totalBreakMins);
 
   document.getElementById('page-content').innerHTML=`
     <div style="padding-bottom:4px">
