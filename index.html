@@ -570,7 +570,13 @@ function navigateTo(page){
     'edit-times': renderEditTimes,
     'recurring-shifts': renderRecurringShifts,
   };
-  (pages[page]||renderDashboard)();
+  try{
+    (pages[page]||renderDashboard)();
+  }catch(err){
+    content.innerHTML='<div class="card" style="margin-top:24px"><div style="color:var(--r600);font-weight:600;margin-bottom:8px">⚠️ Fehler beim Laden</div>'
+      +'<div style="font-size:13px;color:var(--s500)">'+err.message+'</div>'
+      +'<button class="btn-sm btn-outline" style="margin-top:12px" onclick="navigateTo(currentPage)">Nochmal versuchen</button></div>';
+  }
 }
 
 // ── DASHBOARD ────────────────────────────────────────────────────────────────
@@ -1001,7 +1007,7 @@ async function renderMyTimes(){
   const entries=entriesRes.data||[];
   const breaks=breaksRes.data||[];
   const totalBrutto=entries.reduce((a,e)=>a+(e.duration_minutes||0),0);
-  const totalBreak=breaks.reduce((a,b)=>a+(b.duration_minutes||0),0);
+  const totalBreak=breaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
   const totalNetto=totalBrutto-totalBreak;
   document.getElementById('page-content').innerHTML=`
     <div class="page-header"><div class="page-title">Meine Arbeitszeiten</div><div class="page-sub">Alle erfassten Zeiten</div></div>
@@ -1018,9 +1024,10 @@ async function renderMyTimes(){
         const dayBreaks=breaks.filter(b=>b.date===e.date);
         const breakMins=dayBreaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
         const netMins=calcNettoMins(e,dayBreaks);
-        const breakDetail=dayBreaks.length>0
-          ? dayBreaks.map(b=>b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5)).join(', ')
-          : '—';
+        const closedBreaks=dayBreaks.filter(b=>b.pause_end);
+        const breakDetail=closedBreaks.length>0
+          ? closedBreaks.map(b=>b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5)).join(', ')
+          : (dayBreaks.find(b=>!b.pause_end)?'läuft…':'—');
         return '<tr>'
           +'<td>'+new Date(e.date).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'})+'</td>'
           +'<td class="text-mono">'+e.clock_in?.slice(0,5)+'</td>'
