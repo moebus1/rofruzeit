@@ -1340,57 +1340,87 @@ async function renderShifts(){
 
 // ── REPORTS ──────────────────────────────────────────────────────────────────
 async function renderReports(){
-  const [empRes, entriesRes, shiftsRes] = await Promise.all([
+  const now=new Date();
+  // Default: current month
+  const defFrom=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-01';
+  const defTo=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(getDaysInMonth(now.getFullYear(),now.getMonth()));
+  let repFrom=defFrom, repTo=defTo;
+
+  const [empRes,entriesRes,breaksRes]=await Promise.all([
     sb.from('profiles').select('*').eq('role','employee'),
     sb.from('time_entries').select('*'),
-    sb.from('shifts').select('*'),
+    sb.from('break_entries').select('*').not('pause_end','is',null)
   ]);
-  const employees=empRes.data||[], entries=entriesRes.data||[], shifts=shiftsRes.data||[];
-  let period='week';
-  const filterDate=(dateStr)=>{
-    const diff=(today-new Date(dateStr))/86400000;
-    if(period==='week') return diff<7;
-    if(period==='month') return diff<30;
-    return true;
-  };
-  const render=()=>{
-    document.getElementById('page-content').innerHTML=`
-      <div class="page-header">
-        <div class="page-header-row">
-          <div><div class="page-title">Auswertungen</div><div class="page-sub">Arbeitszeiten & Übersichten</div></div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <select class="form-select" style="width:auto" onchange="reportPeriod(this.value)">
-              <option value="week"${period==='week'?' selected':''}>Diese Woche</option>
-              <option value="month"${period==='month'?' selected':''}>Dieser Monat</option>
-              <option value="all"${period==='all'?' selected':''}>Gesamt</option>
-            </select>
-            <button class="btn-sm btn-green" onclick="openExportModal()">📥 Excel-Export</button>
-          </div>
-        </div>
-      </div>
-      ${employees.map(emp=>{
-        const ee=entries.filter(e=>e.employee_id===emp.id&&filterDate(e.date));
-        const totalBrutto=ee.reduce((a,e)=>a+(e.duration_minutes||0),0);
-        const total=totalBrutto;
-        const workDays=ee.length;
-        const soll=(period==='week'?5:period==='month'?22:22)*8;
-        const pct=Math.min(100,Math.round(total/60/soll*100));
-        const empShifts=shifts.filter(s=>s.employee_id===emp.id&&filterDate(s.date));
-        return `<div class="card">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-            <div><div style="font-weight:600;font-size:15px">${emp.name}</div>
-              <div class="text-sm">${emp.department||''} · ${workDays} Buchungen</div></div>
-            <div style="text-align:right">
-              <div style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--g700)">${fmtMins(total)}</div>
-              <div class="text-sm">${empShifts.length} Schichten</div>
-            </div>
-          </div>
-          <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-          <div style="font-size:11px;color:var(--s400);margin-top:4px">${pct}% des Solls</div>
-        </div>`;
-      }).join('')}`;
-    window.reportPeriod=(p)=>{ period=p; render(); };
-  };
+  const employees=empRes.data||[], entries=entriesRes.data||[], breaks=breaksRes.data||[];
+
+  function render(){
+    const filtered=entries.filter(function(e){return e.date>=repFrom&&e.date<=repTo;});
+    const filteredBreaks=breaks.filter(function(b){return b.date>=repFrom&&b.date<=repTo;});
+
+    document.getElementById('page-content').innerHTML=
+      '<div class="page-header">'
+      +'<div class="page-header-row">'
+      +'<div><div class="page-title">Auswertungen</div><div class="page-sub">Gearbeitete Stunden im gewählten Zeitraum</div></div>'
+      +'<button class="btn-sm btn-green" onclick="openExportModal()">📥 Excel-Export</button>'
+      +'</div></div>'
+      +'<div class="card" style="margin-bottom:20px">'
+      +'<div class="card-title">📅 Zeitraum wählen</div>'
+      +'<div class="two-col">'
+      +'<div class="form-group"><label class="form-label">Von</label>'
+      +'<input class="form-input" type="date" id="rep-from" value="'+repFrom+'" onchange="window.repFrom=this.value;window.renderReports2()"></div>'
+      +'<div class="form-group"><label class="form-label">Bis</label>'
+      +'<input class="form-input" type="date" id="rep-to" value="'+repTo+'" onchange="window.repTo=this.value;window.renderReports2()"></div>'
+      +'</div></div>'
+      +'<div id="rep-results">'
+      +buildReportRows(filtered, filteredBreaks, employees)
+      +'</div>';
+
+    window.repFrom=repFrom; window.repTo=repTo;
+    window.renderReports2=function(){
+      repFrom=window.repFrom; repTo=window.repTo;
+      if(!repFrom||!repTo) return;
+      const f2=entries.filter(function(e){return e.date>=repFrom&&e.date<=repTo;});
+      const b2=breaks.filter(function(b){return b.date>=repFrom&&b.date<=repTo;});
+      document.getElementById('rep-results').innerHTML=buildReportRows(f2,b2,employees);
+    };
+  }
+
+  function buildReportRows(filtered, filteredBreaks, employees){
+    // Summary table
+    var rows='<div class="card"><table><thead><tr>'
+      +'<th>Mitarbeiter</th><th>Abteilung</th><th>Buchungen</th>'
+      +'<th>Brutto-Stunden</th><th>Pause</th><th>Netto-Stunden</th>'
+      +'</tr></thead><tbody>';
+    var totalBrutto=0, totalNetto=0, totalPause=0;
+    employees.forEach(function(emp){
+      const ee=filtered.filter(function(e){return e.employee_id===emp.id;});
+      const bb=filteredBreaks.filter(function(b){return b.employee_id===emp.id;});
+      const brutto=ee.reduce(function(a,e){return a+(e.duration_minutes||0);},0);
+      const pauseMins=bb.reduce(function(a,b){return a+(b.duration_minutes||0);},0);
+      const netto=ee.reduce(function(sum,e){
+        const eBreaks=bb.filter(function(b){return b.date===e.date;});
+        return sum+calcNettoMins(e,eBreaks);
+      },0);
+      totalBrutto+=brutto; totalPause+=pauseMins; totalNetto+=netto;
+      rows+='<tr>'
+        +'<td><strong>'+emp.name+'</strong></td>'
+        +'<td>'+( emp.department||'—')+'</td>'
+        +'<td style="text-align:center">'+ee.length+'</td>'
+        +'<td class="text-mono">'+fmtMins(brutto)+'</td>'
+        +'<td class="text-mono" style="color:var(--s400)">'+fmtMins(pauseMins)+'</td>'
+        +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netto)+'</strong></td>'
+        +'</tr>';
+    });
+    rows+='<tr style="background:var(--g50)">'
+      +'<td colspan="3"><strong>Gesamt</strong></td>'
+      +'<td class="text-mono"><strong>'+fmtMins(totalBrutto)+'</strong></td>'
+      +'<td class="text-mono" style="color:var(--s400)"><strong>'+fmtMins(totalPause)+'</strong></td>'
+      +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(totalNetto)+'</strong></td>'
+      +'</tr>';
+    rows+='</tbody></table></div>';
+    return rows;
+  }
+
   render();
 }
 
@@ -1623,120 +1653,268 @@ async function renderMyTimeAccount(){
 
 // ── TIME ACCOUNTS ADMIN ──────────────────────────────────────────────────────
 async function renderTimeAccounts(){
-  const [empRes, accountsRes, entriesRes] = await Promise.all([
-    sb.from('profiles').select('*').eq('employee_type','account'),
-    sb.from('time_accounts').select('*'),
-    sb.from('time_entries').select('*')
-  ]);
-  const employees=empRes.data||[], accounts=accountsRes.data||[], entries=entriesRes.data||[];
   const now=new Date();
   const curY=now.getFullYear(), curM=now.getMonth()+1;
 
-  document.getElementById('page-content').innerHTML=`
-    <div class="page-header">
-      <div class="page-header-row">
-        <div><div class="page-title">Arbeitszeitkonten</div><div class="page-sub">Monatsabschlüsse & Kontoübersicht</div></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn-sm btn-outline" onclick="openStartBalance()">⚡ Startsaldo eintragen</button>
-          <button class="btn-sm btn-green" onclick="openMonthClose()">📅 Monatsabschluss</button>
-        </div>
-      </div>
-    </div>
-    ${employees.length===0?'<div class="card"><p style="color:var(--s400);font-size:13px">Noch keine Mitarbeiter mit Zeitkonto. Bitte unter Mitarbeiter den Typ auf "Zeitkonto" setzen.</p></div>':
-    employees.map(emp=>{
+  const [empRes,accountsRes,entriesRes,breaksRes,adjustRes]=await Promise.all([
+    sb.from('profiles').select('*').eq('employee_type','account'),
+    sb.from('time_accounts').select('*'),
+    sb.from('time_entries').select('*'),
+    sb.from('break_entries').select('*').not('pause_end','is',null),
+    sb.from('account_adjustments').select('*').order('date',{ascending:false})
+  ]);
+  const employees=empRes.data||[], accounts=accountsRes.data||[];
+  const entries=entriesRes.data||[], breaks=breaksRes.data||[];
+  const adjustments=adjustRes.data||[];
+
+  // Check if auto monthly close is due (1st of month, previous month not yet closed)
+  const prevM=curM===1?12:curM-1;
+  const prevY=curM===1?curY-1:curY;
+  const autoCloseInfo=[];
+  employees.forEach(function(emp){
+    const already=accounts.find(function(a){return a.employee_id===emp.id&&a.year===prevY&&a.month===prevM;});
+    if(!already) autoCloseInfo.push(emp.name);
+  });
+
+  // Build page
+  var html='<div class="page-header"><div class="page-header-row">'
+    +'<div><div class="page-title">Arbeitszeitkonten</div>'
+    +'<div class="page-sub">Kontoübersicht & Monatsabschlüsse</div></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn-sm btn-outline" onclick="openStartBalance()">⚡ Startsaldo</button>'
+    +'<button class="btn-sm btn-outline" onclick="openAccountAdjust()">✏️ Konto anpassen</button>'
+    +'<button class="btn-sm btn-green" onclick="openMonthClose()">📅 Monatsabschluss</button>'
+    +'</div></div></div>';
+
+  // Auto-close hint
+  if(autoCloseInfo.length>0){
+    html+='<div class="card" style="background:#fffbeb;border-color:var(--a400)">'
+      +'<div style="font-size:13px;color:#92400e">⚠️ <strong>Monatsabschluss ausstehend</strong> für '
+      +MONTHS[prevM-1]+' '+prevY+': '+autoCloseInfo.join(', ')
+      +'<br><button class="btn-sm btn-amber" style="margin-top:8px" onclick="autoCloseAll()">🔄 Alle automatisch abschließen</button></div></div>';
+  }
+
+  if(employees.length===0){
+    html+='<div class="card"><p style="color:var(--s400);font-size:13px">Noch keine Mitarbeiter mit Zeitkonto.</p></div>';
+  } else {
+    employees.forEach(function(emp){
       const weeklyH=emp.weekly_hours||0;
       const monthlyH=Math.round(weeklyH*52/12*10)/10;
-      const empEntries=entries.filter(e=>e.employee_id===emp.id);
-      const curMonthEntries=empEntries.filter(e=>{ const d=new Date(e.date); return d.getFullYear()===curY&&d.getMonth()+1===curM; });
-      const workedCur=curMonthEntries.reduce((a,e)=>a+(e.duration_minutes||0),0)/60;
-      const empAccounts=accounts.filter(a=>a.employee_id===emp.id).sort((a,b)=>b.year-a.year||b.month-a.month);
-      const latestBalance=empAccounts[0]?.balance||0;
-      return `<div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-          <div>
-            <div style="font-weight:600;font-size:15px">${emp.name}</div>
-            <div class="text-sm">${emp.department||''} · ${weeklyH}h/Woche · Monatssoll: ${monthlyH}h</div>
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:11px;color:var(--s400)">Kontostand</div>
-            <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:${latestBalance>=0?'var(--g600)':'var(--r600)'}">${latestBalance>=0?'+':''}${Math.round(latestBalance*10)/10}h</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
-          <div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:100px">
-            <div style="font-size:11px;color:var(--s400)">Diesen Monat</div>
-            <div style="font-family:var(--mono);font-weight:600;font-size:16px;color:var(--s700)">${Math.round(workedCur*10)/10}h</div>
-          </div>
-          <div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:100px">
-            <div style="font-size:11px;color:var(--s400)">Soll/Monat</div>
-            <div style="font-family:var(--mono);font-weight:600;font-size:16px;color:var(--s700)">${monthlyH}h</div>
-          </div>
-          <div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:100px">
-            <div style="font-size:11px;color:var(--s400)">Abschlüsse</div>
-            <div style="font-family:var(--mono);font-weight:600;font-size:16px;color:var(--s700)">${empAccounts.length}</div>
-          </div>
-        </div>
-        ${empAccounts.length>0?`<table><thead><tr><th>Monat</th><th>Soll</th><th>Gearbeitet</th><th>Ausgezahlt</th><th>Saldo</th></tr></thead><tbody>
-        ${empAccounts.slice(0,6).map(a=>`<tr>
-          <td>${MONTHS[a.month-1]} ${a.year}</td>
-          <td class="text-mono">${a.hours_target}h</td>
-          <td class="text-mono">${Math.round(a.hours_worked*10)/10}h</td>
-          <td class="text-mono">${a.hours_paid_out}h</td>
-          <td class="text-mono" style="font-weight:600;color:${a.balance>=0?'var(--g600)':'var(--r600)'}">${a.balance>=0?'+':''}${Math.round(a.balance*10)/10}h</td>
-        </tr>`).join('')}</tbody></table>`:'<p style="font-size:12px;color:var(--s400)">Noch kein Monatsabschluss durchgeführt.</p>'}
-      </div>`;
-    }).join('')}`;
+      const empEntries=entries.filter(function(e){return e.employee_id===emp.id;});
+      const empBreaks=breaks.filter(function(b){return b.employee_id===emp.id;});
+      const empAdj=adjustments.filter(function(a){return a.employee_id===emp.id;});
+      const empAccounts=accounts.filter(function(a){return a.employee_id===emp.id;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
 
-  window.openMonthClose=()=>{
-    const empOptions=employees.map(e=>`<option value="${e.id}" data-monthly="${Math.round(e.weekly_hours*52/12*10)/10}">${e.name}</option>`).join('');
-    document.getElementById('modal-container').innerHTML=`
-      <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-        <div class="modal">
-          <div class="modal-title">📅 Monatsabschluss durchführen</div>
-          <div class="form-group"><label class="form-label">Mitarbeiter</label>
-            <select class="form-select" id="mc-emp" onchange="updateMonthlyTarget()">${empOptions}</select></div>
-          <div class="two-col">
-            <div class="form-group"><label class="form-label">Jahr</label><input class="form-input" type="number" id="mc-year" value="${curM===1?curY-1:curY}"></div>
-            <div class="form-group"><label class="form-label">Monat</label>
-              <select class="form-select" id="mc-month">
-                ${MONTHS.map((m,i)=>`<option value="${i+1}"${i+1===(curM===1?12:curM-1)?' selected':''}>${m}</option>`).join('')}
-              </select></div>
-          </div>
-          <div class="form-group"><label class="form-label">Monatssoll (Stunden)</label><input class="form-input" type="number" step="0.5" id="mc-target" value="0"></div>
-          <div class="form-group"><label class="form-label">Gearbeitete Stunden</label><input class="form-input" type="number" step="0.25" id="mc-worked" value="0"></div>
-          <div class="form-group"><label class="form-label">Ausgezahlte Stunden (Auszahlung)</label><input class="form-input" type="number" step="0.25" id="mc-paid" value="0"></div>
-          <div id="mc-balance-info" style="background:var(--s50);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--s600);margin-bottom:12px"></div>
-          <div class="modal-footer">
-            <button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>
-            <button class="btn-sm btn-green" onclick="saveMonthClose()">Abschluss speichern</button>
-          </div>
-        </div></div>`;
+      // Current month netto worked
+      const curEntries=empEntries.filter(function(e){
+        const d=new Date(e.date); return d.getFullYear()===curY&&d.getMonth()+1===curM;
+      });
+      const curNetto=curEntries.reduce(function(sum,e){
+        const eBreaks=empBreaks.filter(function(b){return b.date===e.date;});
+        return sum+calcNettoMins(e,eBreaks);
+      },0)/60;
 
-    const updateInfo=()=>{
+      // Latest balance = last account balance + adjustments since then
+      const latestAcc=empAccounts[0];
+      const adjTotal=empAdj.reduce(function(a,d){return a+d.hours;},0);
+      const latestBalance=Math.round(((latestAcc?latestAcc.balance:0)+adjTotal)*10)/10;
+
+      html+='<div class="card">'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">'
+        +'<div><div style="font-weight:600;font-size:15px">'+emp.name+'</div>'
+        +'<div class="text-sm">'+(emp.department||'')+' · '+weeklyH+'h/Woche · Monatssoll: '+monthlyH+'h</div></div>'
+        +'<div style="text-align:right">'
+        +'<div style="font-size:11px;color:var(--s400)">Kontostand</div>'
+        +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+(latestBalance>=0?'var(--g600)':'var(--r600)')+'">'+( latestBalance>=0?'+':'')+latestBalance+'h</div>'
+        +'</div></div>'
+        +'<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">'
+        +'<div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:90px">'
+        +'<div style="font-size:11px;color:var(--s400)">Netto diesen Monat</div>'
+        +'<div style="font-family:var(--mono);font-weight:600;font-size:15px;color:var(--s700)">'+Math.round(curNetto*10)/10+'h</div></div>'
+        +'<div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:90px">'
+        +'<div style="font-size:11px;color:var(--s400)">Soll/Monat</div>'
+        +'<div style="font-family:var(--mono);font-weight:600;font-size:15px;color:var(--s700)">'+monthlyH+'h</div></div>'
+        +'<div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:90px">'
+        +'<div style="font-size:11px;color:var(--s400)">Abschlüsse</div>'
+        +'<div style="font-family:var(--mono);font-weight:600;font-size:15px;color:var(--s700)">'+empAccounts.length+'</div></div>'
+        +'</div>';
+
+      // Accounts table
+      if(empAccounts.length>0){
+        html+='<table><thead><tr><th>Monat</th><th>Soll</th><th>Netto gearbeitet</th><th>Abgezogen (Gehalt)</th><th>Saldo</th></tr></thead><tbody>';
+        empAccounts.slice(0,6).forEach(function(a){
+          html+='<tr>'
+            +'<td>'+MONTHS[a.month-1]+' '+a.year+'</td>'
+            +'<td class="text-mono">'+a.hours_target+'h</td>'
+            +'<td class="text-mono">'+Math.round(a.hours_worked*10)/10+'h</td>'
+            +'<td class="text-mono">'+a.hours_paid_out+'h</td>'
+            +'<td class="text-mono" style="font-weight:600;color:'+(a.balance>=0?'var(--g600)':'var(--r600)')+'">'+( a.balance>=0?'+':'')+Math.round(a.balance*10)/10+'h</td>'
+            +'</tr>';
+        });
+        html+='</tbody></table>';
+      } else {
+        html+='<p style="font-size:12px;color:var(--s400)">Noch kein Monatsabschluss.</p>';
+      }
+
+      // Adjustments
+      if(empAdj.length>0){
+        html+='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--s100)">'
+          +'<div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:6px">Manuelle Anpassungen</div>'
+          +'<table><thead><tr><th>Datum</th><th>Stunden</th><th>Grund</th></tr></thead><tbody>';
+        empAdj.slice(0,5).forEach(function(a){
+          html+='<tr>'
+            +'<td>'+new Date(a.date).toLocaleDateString('de-DE')+'</td>'
+            +'<td class="text-mono" style="color:'+(a.hours>=0?'var(--g600)':'var(--r600)')+'">'+( a.hours>=0?'+':'')+a.hours+'h</td>'
+            +'<td style="font-size:12px;color:var(--s500)">'+a.reason+'</td>'
+            +'</tr>';
+        });
+        html+='</tbody></table></div>';
+      }
+
+      html+='</div>';
+    });
+  }
+
+  document.getElementById('page-content').innerHTML=html;
+
+  // ── Auto close all ────────────────────────────────────────────────────────
+  window.autoCloseAll=async function(){
+    if(!confirm('Automatisch Monatsabschluss für '+MONTHS[prevM-1]+' '+prevY+' für alle MA durchführen?')) return;
+    const from=prevY+'-'+pad(prevM)+'-01';
+    const to=prevY+'-'+pad(prevM)+'-'+pad(getDaysInMonth(prevY,prevM-1));
+    const [mEntriesRes,mBreaksRes]=await Promise.all([
+      sb.from('time_entries').select('*').gte('date',from).lte('date',to),
+      sb.from('break_entries').select('*').gte('date',from).lte('date',to).not('pause_end','is',null)
+    ]);
+    const mEntries=mEntriesRes.data||[], mBreaks=mBreaksRes.data||[];
+    for(const emp of employees){
+      const already=accounts.find(function(a){return a.employee_id===emp.id&&a.year===prevY&&a.month===prevM;});
+      if(already) continue;
+      const monthlyH=Math.round((emp.weekly_hours||0)*52/12*10)/10;
+      const empE=mEntries.filter(function(e){return e.employee_id===emp.id;});
+      const empB=mBreaks.filter(function(b){return b.employee_id===emp.id;});
+      const nettoMins=empE.reduce(function(sum,e){
+        return sum+calcNettoMins(e,empB.filter(function(b){return b.date===e.date;}));
+      },0);
+      const nettoH=Math.round(nettoMins/60*10)/10;
+      const balance=Math.round((nettoH-monthlyH)*10)/10;
+      await sb.from('time_accounts').insert({
+        employee_id:emp.id,year:prevY,month:prevM,
+        hours_target:monthlyH,hours_worked:nettoH,
+        hours_paid_out:monthlyH,balance:balance
+      });
+    }
+    alert('Monatsabschluss abgeschlossen!');
+    renderTimeAccounts();
+  };
+
+  // ── Manual account adjustment ─────────────────────────────────────────────
+  window.openAccountAdjust=function(){
+    document.getElementById('modal-container').innerHTML=
+      '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+      +'<div class="modal">'
+      +'<div class="modal-title">✏️ Zeitkonto manuell anpassen</div>'
+      +'<p style="font-size:13px;color:var(--s500);margin-bottom:16px">'
+      +'Für Überstundenabbau, Auszahlung außer der Reihe oder Korrekturen.'
+      +'</p>'
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+      +'<select class="form-select" id="adj-emp">'
+      +employees.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
+      +'</select></div>'
+      +'<div class="two-col">'
+      +'<div class="form-group"><label class="form-label">Datum</label>'
+      +'<input class="form-input" type="date" id="adj-date" value="'+todayStr+'"></div>'
+      +'<div class="form-group"><label class="form-label">Stunden</label>'
+      +'<input class="form-input" type="number" step="0.25" id="adj-hours" placeholder="z.B. -8 oder +4"></div>'
+      +'</div>'
+      +'<div class="form-group"><label class="form-label">Grund</label>'
+      +'<input class="form-input" id="adj-reason" placeholder="z.B. Überstunden abgefeiert, Auszahlung 10h…"></div>'
+      +'<p style="font-size:12px;color:var(--s400);margin-bottom:12px">'
+      +'Negativ = Konto wird reduziert (Abbau/Auszahlung). Positiv = Konto wird erhöht.'
+      +'</p>'
+      +'<div class="modal-footer">'
+      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+      +'<button class="btn-sm btn-green" onclick="saveAccountAdjust()">Speichern</button>'
+      +'</div></div></div>';
+
+    window.saveAccountAdjust=async function(){
+      const empId=document.getElementById('adj-emp').value;
+      const date=document.getElementById('adj-date').value;
+      const hours=parseFloat(document.getElementById('adj-hours').value);
+      const reason=document.getElementById('adj-reason').value.trim();
+      if(!date||isNaN(hours)||!reason){alert('Bitte alle Felder ausfüllen.');return;}
+      await sb.from('account_adjustments').insert({
+        employee_id:empId,date,hours,reason,created_by:currentUser.id
+      });
+      closeModal(); renderTimeAccounts();
+    };
+  };
+
+  // ── Month close modal ─────────────────────────────────────────────────────
+  window.openMonthClose=function(){
+    const empOptions=employees.map(function(e){
+      return '<option value="'+e.id+'" data-monthly="'+Math.round((e.weekly_hours||0)*52/12*10)/10+'">'+e.name+'</option>';
+    }).join('');
+    document.getElementById('modal-container').innerHTML=
+      '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+      +'<div class="modal">'
+      +'<div class="modal-title">📅 Monatsabschluss</div>'
+      +'<p style="font-size:13px;color:var(--s500);margin-bottom:16px">'
+      +'Monatssoll wird vom Konto abgezogen (= Gehalt ausbezahlt). '
+      +'Differenz zur tatsächlich gearbeiteten Zeit bleibt als Saldo.'
+      +'</p>'
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+      +'<select class="form-select" id="mc-emp" onchange="updateMonthlyTarget()">'
+      +empOptions+'</select></div>'
+      +'<div class="two-col">'
+      +'<div class="form-group"><label class="form-label">Jahr</label>'
+      +'<input class="form-input" type="number" id="mc-year" value="'+(curM===1?curY-1:curY)+'"></div>'
+      +'<div class="form-group"><label class="form-label">Monat</label>'
+      +'<select class="form-select" id="mc-month">'
+      +MONTHS.map(function(m,i){return '<option value="'+(i+1)+'"'+(i+1===(curM===1?12:curM-1)?' selected':'')+'>'+m+'</option>';}).join('')
+      +'</select></div></div>'
+      +'<div class="form-group"><label class="form-label">Monatssoll / Auszahlung (Stunden)</label>'
+      +'<input class="form-input" type="number" step="0.5" id="mc-target" value="0"></div>'
+      +'<div class="form-group"><label class="form-label">Netto gearbeitete Stunden</label>'
+      +'<input class="form-input" type="number" step="0.25" id="mc-worked" value="0">'
+      +'<div style="font-size:11px;color:var(--s400);margin-top:3px">Trage hier die Netto-Stunden (ohne Pausen) ein</div></div>'
+      +'<div id="mc-balance-info" style="background:var(--s50);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--s600);margin-bottom:12px"></div>'
+      +'<div class="modal-footer">'
+      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+      +'<button class="btn-sm btn-green" onclick="saveMonthClose()">Abschluss speichern</button>'
+      +'</div></div></div>';
+
+    function updateInfo(){
       const w=parseFloat(document.getElementById('mc-worked').value)||0;
       const t=parseFloat(document.getElementById('mc-target').value)||0;
-      const p=parseFloat(document.getElementById('mc-paid').value)||0;
-      const diff=w-t-p;
-      document.getElementById('mc-balance-info').innerHTML=`Saldo: <strong style="color:${diff>=0?'var(--g600)':'var(--r600)'}">${diff>=0?'+':''}${Math.round(diff*10)/10}h</strong> (Gearbeitet ${w}h – Soll ${t}h – Ausgezahlt ${p}h)`;
-    };
-    window.updateMonthlyTarget=()=>{
+      const diff=Math.round((w-t)*10)/10;
+      document.getElementById('mc-balance-info').innerHTML=
+        'Saldo: <strong style="color:'+(diff>=0?'var(--g600)':'var(--r600)')+'">'+( diff>=0?'+':'')+diff+'h</strong>'
+        +' ('+w+'h gearbeitet – '+t+'h Monatssoll/Auszahlung)';
+    }
+    window.updateMonthlyTarget=function(){
       const sel=document.getElementById('mc-emp');
       const opt=sel.options[sel.selectedIndex];
-      document.getElementById('mc-target').value=opt.dataset.monthly||0;
+      document.getElementById('mc-target').value=opt?opt.dataset.monthly||0:0;
       updateInfo();
     };
-    ['mc-worked','mc-target','mc-paid'].forEach(id=>document.getElementById(id).addEventListener('input',updateInfo));
+    document.getElementById('mc-worked').addEventListener('input',updateInfo);
+    document.getElementById('mc-target').addEventListener('input',updateInfo);
     window.updateMonthlyTarget();
 
-    window.saveMonthClose=async()=>{
+    window.saveMonthClose=async function(){
       const empId=document.getElementById('mc-emp').value;
       const year=parseInt(document.getElementById('mc-year').value);
       const month=parseInt(document.getElementById('mc-month').value);
       const target=parseFloat(document.getElementById('mc-target').value)||0;
       const worked=parseFloat(document.getElementById('mc-worked').value)||0;
-      const paid=parseFloat(document.getElementById('mc-paid').value)||0;
-      const balance=Math.round((worked-target-paid)*10)/10;
-      await sb.from('time_accounts').upsert({employee_id:empId,year,month,hours_target:target,hours_worked:worked,hours_paid_out:paid,balance},{onConflict:'employee_id,year,month'});
+      const balance=Math.round((worked-target)*10)/10;
+      const {error}=await sb.from('time_accounts').upsert({
+        employee_id:empId,year,month,
+        hours_target:target,hours_worked:worked,
+        hours_paid_out:target,balance
+      },{onConflict:'employee_id,year,month'});
+      if(error){alert('Fehler: '+error.message);return;}
       closeModal(); renderTimeAccounts();
     };
   };
