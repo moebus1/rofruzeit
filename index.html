@@ -1553,46 +1553,135 @@ async function renderVacationAdmin(){
     sb.from('profiles').select('*')
   ]);
   const requests=vacRes.data||[], profiles=profilesRes.data||[];
-  const pMap={}; profiles.forEach(p=>pMap[p.id]=p);
-  const pending=requests.filter(r=>r.status==='pending');
-  const decided=requests.filter(r=>r.status!=='pending');
-  const statusBadge=(s)=>s==='approved'?'<span class="badge badge-green">✓ Genehmigt</span>':s==='rejected'?'<span class="badge badge-red">✗ Abgelehnt</span>':'<span class="badge badge-amber">⏳ Ausstehend</span>';
+  const employees=profiles.filter(function(p){return p.role==='employee';});
+  const pMap={}; profiles.forEach(function(p){pMap[p.id]=p;});
+  const pending=requests.filter(function(r){return r.status==='pending';});
+  function statusBadge(s){
+    return s==='approved'?'<span class="badge badge-green">✓ Genehmigt</span>'
+      :s==='rejected'?'<span class="badge badge-red">✗ Abgelehnt</span>'
+      :'<span class="badge badge-amber">⏳ Ausstehend</span>';
+  }
 
-  document.getElementById('page-content').innerHTML=`
-    <div class="page-header">
-      <div class="page-title">Urlaubsanträge</div>
-      <div class="page-sub">Anträge genehmigen oder ablehnen</div>
-    </div>
-    ${pending.length>0?`<div class="card" style="border-color:var(--a400)">
-      <div class="card-title">⏳ Offene Anträge (${pending.length})</div>
-      <table><thead><tr><th>Mitarbeiter</th><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th><th></th></tr></thead><tbody>
-      ${pending.map(r=>`<tr>
-        <td><strong>${pMap[r.employee_id]?.name||'?'}</strong></td>
-        <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
-        <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
-        <td class="text-mono">${r.days}</td>
-        <td style="font-size:12px;color:var(--s400)">${r.note||'—'}</td>
-        <td style="display:flex;gap:6px">
-          <button class="btn-sm btn-green" style="font-size:12px;padding:5px 10px" onclick="decideVacation(${r.id},'approved')">✓ Genehmigen</button>
-          <button class="btn-sm btn-red" style="font-size:12px;padding:5px 10px" onclick="decideVacation(${r.id},'rejected')">✗ Ablehnen</button>
-        </td></tr>`).join('')}
-      </tbody></table></div>`:'<div class="card" style="background:var(--g50);border-color:var(--g200)"><div style="color:var(--g700);font-size:13px">✅ Keine offenen Anträge</div></div>'}
-    <div class="card">
-      <div class="card-title">📋 Alle Anträge</div>
-      ${requests.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Anträge.</p>':
-      `<table><thead><tr><th>Mitarbeiter</th><th>Von</th><th>Bis</th><th>Tage</th><th>Status</th></tr></thead><tbody>
-      ${requests.map(r=>`<tr>
-        <td>${pMap[r.employee_id]?.name||'?'}</td>
-        <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
-        <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
-        <td class="text-mono">${r.days}</td>
-        <td>${statusBadge(r.status)}</td></tr>`).join('')}
-      </tbody></table>`}
-    </div>`;
+  var html='<div class="page-header"><div class="page-header-row">'
+    +'<div><div class="page-title">Urlaubsanträge</div>'
+    +'<div class="page-sub">Anträge genehmigen, ablehnen oder manuell eintragen</div></div>'
+    +'<button class="btn-sm btn-green" onclick="openAddVacationAdmin()">+ Urlaub eintragen</button>'
+    +'</div></div>';
 
-  window.decideVacation=async(id,status)=>{
-    await sb.from('vacation_requests').update({status,decided_by:currentUser.id,decided_at:new Date().toISOString()}).eq('id',id);
+  // Pending
+  if(pending.length>0){
+    html+='<div class="card" style="border-color:var(--a400)">'
+      +'<div class="card-title">⏳ Offene Anträge ('+pending.length+')</div>'
+      +'<table><thead><tr><th>Mitarbeiter</th><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th><th></th></tr></thead><tbody>';
+    pending.forEach(function(r){
+      html+='<tr>'
+        +'<td><strong>'+(pMap[r.employee_id]?pMap[r.employee_id].name:'?')+'</strong></td>'
+        +'<td>'+new Date(r.date_from).toLocaleDateString('de-DE')+'</td>'
+        +'<td>'+new Date(r.date_to).toLocaleDateString('de-DE')+'</td>'
+        +'<td class="text-mono">'+r.days+'</td>'
+        +'<td style="font-size:12px;color:var(--s400)">'+(r.note||'—')+'</td>'
+        +'<td style="display:flex;gap:6px">'
+        +'<button class="btn-sm btn-green" style="font-size:12px;padding:5px 10px" data-vid="'+r.id+'" data-st="approved" onclick="decideVacation(this.dataset.vid,this.dataset.st)">✓</button>'
+        +'<button class="btn-sm btn-red" style="font-size:12px;padding:5px 10px" data-vid="'+r.id+'" data-st="rejected" onclick="decideVacation(this.dataset.vid,this.dataset.st)">✗</button>'
+        +'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+  } else {
+    html+='<div class="card" style="background:var(--g50);border-color:var(--g200)">'
+      +'<div style="color:var(--g700);font-size:13px">✅ Keine offenen Anträge</div></div>';
+  }
+
+  // All requests
+  html+='<div class="card"><div class="card-title">📋 Alle Urlaubseinträge</div>';
+  if(requests.length===0){
+    html+='<p style="color:var(--s400);font-size:13px">Noch keine Einträge.</p>';
+  } else {
+    html+='<table><thead><tr><th>Mitarbeiter</th><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th><th>Status</th><th></th></tr></thead><tbody>';
+    requests.forEach(function(r){
+      html+='<tr>'
+        +'<td>'+(pMap[r.employee_id]?pMap[r.employee_id].name:'?')+'</td>'
+        +'<td>'+new Date(r.date_from).toLocaleDateString('de-DE')+'</td>'
+        +'<td>'+new Date(r.date_to).toLocaleDateString('de-DE')+'</td>'
+        +'<td class="text-mono">'+r.days+'</td>'
+        +'<td style="font-size:12px;color:var(--s400)">'+(r.note||'—')+'</td>'
+        +'<td>'+statusBadge(r.status)+'</td>'
+        +'<td><button class="btn-sm btn-red" style="font-size:11px;padding:3px 8px" data-vid="'+r.id+'" onclick="deleteVacation(this.dataset.vid)">✕</button></td>'
+        +'</tr>';
+    });
+    html+='</tbody></table>';
+  }
+  html+='</div>';
+
+  document.getElementById('page-content').innerHTML=html;
+
+  window.decideVacation=async function(id,status){
+    await sb.from('vacation_requests').update({
+      status,decided_by:currentUser.id,
+      decided_at:new Date().toISOString()
+    }).eq('id',id);
     renderVacationAdmin();
+  };
+
+  window.deleteVacation=async function(id){
+    if(!confirm('Eintrag wirklich löschen?')) return;
+    await sb.from('vacation_requests').delete().eq('id',id);
+    renderVacationAdmin();
+  };
+
+  window.openAddVacationAdmin=function(){
+    document.getElementById('modal-container').innerHTML=
+      '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+      +'<div class="modal">'
+      +'<div class="modal-title">🏖️ Urlaub manuell eintragen</div>'
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+      +'<select class="form-select" id="av-emp">'
+      +employees.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
+      +'</select></div>'
+      +'<div class="two-col">'
+      +'<div class="form-group"><label class="form-label">Von</label>'
+      +'<input class="form-input" type="date" id="av-from" value="'+todayStr+'"></div>'
+      +'<div class="form-group"><label class="form-label">Bis</label>'
+      +'<input class="form-input" type="date" id="av-to" value="'+todayStr+'"></div>'
+      +'</div>'
+      +'<div id="av-days-info" style="font-size:13px;color:var(--s500);margin-bottom:12px"></div>'
+      +'<div class="form-group"><label class="form-label">Notiz (optional)</label>'
+      +'<input class="form-input" id="av-note" placeholder="z.B. Jahresurlaub, Sonderurlaub…"></div>'
+      +'<div class="modal-footer">'
+      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+      +'<button class="btn-sm btn-green" onclick="saveAdminVacation()">Eintragen</button>'
+      +'</div></div></div>';
+
+    function calcDays(){
+      const f=document.getElementById('av-from').value;
+      const t=document.getElementById('av-to').value;
+      if(f&&t){
+        let d=0, cur=new Date(f), end=new Date(t);
+        while(cur<=end){if(cur.getDay()!==0&&cur.getDay()!==6)d++;cur.setDate(cur.getDate()+1);}
+        document.getElementById('av-days-info').textContent='Arbeitstage: '+d+' (Wochenenden nicht gezählt)';
+      }
+    }
+    document.getElementById('av-from').addEventListener('change',calcDays);
+    document.getElementById('av-to').addEventListener('change',calcDays);
+    calcDays();
+
+    window.saveAdminVacation=async function(){
+      const empId=document.getElementById('av-emp').value;
+      const f=document.getElementById('av-from').value;
+      const t=document.getElementById('av-to').value;
+      const note=document.getElementById('av-note').value;
+      if(!f||!t||t<f){alert('Bitte gültiges Datum wählen.');return;}
+      let d=0, cur=new Date(f), end=new Date(t);
+      while(cur<=end){if(cur.getDay()!==0&&cur.getDay()!==6)d++;cur.setDate(cur.getDate()+1);}
+      const {error}=await sb.from('vacation_requests').insert({
+        employee_id:empId,date_from:f,date_to:t,
+        days:d,note:note||'Admin-Eintrag',
+        status:'approved',
+        decided_by:currentUser.id,
+        decided_at:new Date().toISOString()
+      });
+      if(error){alert('Fehler: '+error.message);return;}
+      closeModal(); renderVacationAdmin();
+    };
   };
 }
 
