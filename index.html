@@ -1205,88 +1205,124 @@ async function renderShifts(){
     while(cells.length<42) cells.push({day:cells.length-fd-dim+1,curr:false});
     const dStr=(d)=>`${y}-${pad(mo+1)}-${pad(d)}`;
 
-    document.getElementById('page-content').innerHTML=`
-      <div class="page-header">
-        <div class="page-header-row">
-          <div><div class="page-title">Dienstplan</div><div class="page-sub">Schichten planen & verwalten</div></div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn-sm btn-outline" onclick="applyRecurring('${y}','${mo+1}',${JSON.stringify(employees).replace(/"/g,'&quot;')})">🔁 Regelzeiten übernehmen</button>
-          <button class="btn-sm btn-green" onclick="openAddShift(${JSON.stringify(employees).replace(/"/g,'&quot;')})">+ Neue Schicht</button>
-        </div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="cal-nav">
-          <button class="cal-nav-btn" onclick="shiftCalPrev()">← Zurück</button>
-          <div class="cal-nav-title">${MONTHS[mo]} ${y}</div>
-          <button class="cal-nav-btn" onclick="shiftCalNext()">Weiter →</button>
-        </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-          ${employees.map(e=>`<div style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--s600)">
-            <div style="width:10px;height:10px;background:${empColor[e.id]};border-radius:2px"></div>${e.name}
-          </div>`).join('')}
-        </div>
-        <div class="cal-header-row">${DAYS_SHORT.map(d=>`<div class="cal-day-name">${d}</div>`).join('')}</div>
-        <div class="cal-grid">${cells.map(c=>{
-          const ds=c.curr?dStr(c.day):'';
-          const sh=allShifts.filter(s=>s.date===ds);
-          const dayVac=approvedVacations.filter(v=>v.date_from<=ds&&v.date_to>=ds);
-          const dayNote=ds?noteMap[ds]:null;
-          return `<div class="cal-day${c.curr?'':' other-month'}${ds===todayStr?' today':''}${dayNote?' has-note':''}" onclick="${c.curr?`openDayDetail('${ds}')`:''}" style="${c.curr?'':'pointer-events:none'}">
-            <div style="display:flex;align-items:center;justify-content:space-between">
-              <div class="cal-day-num">${c.day}</div>
-              ${dayNote?'<span title="'+dayNote.note.replace(/"/g,"'")+'" style="font-size:11px">📋</span>':''}
-            </div>
-            ${dayNote?`<div class="cal-pill" style="background:#ede9fe;color:#6d28d9;max-width:100%;overflow:hidden;text-overflow:ellipsis" title="${dayNote.note.replace(/"/g,"'")}">${dayNote.note.length>18?dayNote.note.slice(0,16)+'…':dayNote.note}</div>`:''}
-            ${sh.slice(0,2).map(s=>`<div class="cal-pill" style="background:${empColor[s.employee_id]||'#e2e8f0'};color:var(--s700)">${empMap[s.employee_id]?.name.split(' ')[0]||'?'} ${s.start_time?.slice(0,5)}</div>`).join('')}
-            ${dayVac.slice(0,1).map(v=>`<div class="cal-pill" style="background:#fde8ff;color:#7e22ce">🏖 ${empMap[v.employee_id]?.name.split(' ')[0]||'?'}</div>`).join('')}
-            ${(sh.length+dayVac.length)>3?`<div style="font-size:10px;color:var(--s400);margin-top:2px">+${sh.length+dayVac.length-3}</div>`:''}
-          </div>`;
-        }).join('')}</div>
-      </div>`;
+    // Build list view – all entries visible per day
+    var html='<div class="page-header"><div class="page-header-row">'
+      +'<div><div class="page-title">Dienstplan</div><div class="page-sub">'+MONTHS[mo]+' '+y+'</div></div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +'<button class="cal-nav-btn" onclick="shiftCalPrev()">← Zurück</button>'
+      +'<button class="cal-nav-btn" onclick="shiftCalNext()">Weiter →</button>'
+      +'<button class="btn-sm btn-outline" data-y="'+y+'" data-m="'+(mo+1)+'" onclick="applyRecurring(this.dataset.y,this.dataset.m)">🔁 Regelzeiten</button>'
+      +'<button class="btn-sm btn-green" onclick="openAddShift()">+ Neue Schicht</button>'
+      +'</div></div></div>';
 
-    window.shiftCalPrev=()=>{ calDate=new Date(y,mo-1,1); draw(); };
-    window.shiftCalNext=()=>{ calDate=new Date(y,mo+1,1); draw(); };
-    window.openDayDetail=async(date)=>{
-      const sh=allShifts.filter(s=>s.date===date);
-      const dow=DAYS_SHORT[(new Date(date).getDay()+6)%7];
-      const available=employees.filter(e=>(availMap[e.id]||[]).includes(dow));
-      const dateLabel=new Date(date).toLocaleDateString('de-DE',{weekday:'long',day:'numeric',month:'long'});
+    // Legend
+    html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
+      +employees.map(function(e){
+        return '<div style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--s600)">'
+          +'<div style="width:10px;height:10px;background:'+empColor[e.id]+';border-radius:2px"></div>'+e.name+'</div>';
+      }).join('')+'</div>';
+
+    // Day rows – only days with content + today + next 7 days
+    const allDays=[];
+    for(let i=1;i<=dim;i++) allDays.push(dStr(i));
+
+    allDays.forEach(function(ds){
+      const sh=allShifts.filter(function(s){return s.date===ds;});
+      const dayVac=approvedVacations.filter(function(v){return v.date_from<=ds&&v.date_to>=ds;});
+      const dayNote=noteMap[ds];
+      const dow=new Date(ds).getDay();
+      const isWeekend=dow===0||dow===6;
+      const isHol=getBavarianHolidays(y)[ds];
+      const isToday=ds===todayStr;
+      const hasContent=sh.length>0||dayVac.length>0||dayNote;
+
+      // Always show today; show others only if they have content or are upcoming (within 14 days)
+      const daysAhead=Math.round((new Date(ds)-new Date(todayStr))/86400000);
+      const show=hasContent||isToday||(daysAhead>=0&&daysAhead<=14);
+      if(!show) return;
+
+      const dateLabel=new Date(ds).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'});
+      const bgColor=isHol?'#fff0f0':isWeekend?'#fef9f0':isToday?'var(--g50)':'white';
+      const borderColor=isHol?'#fca5a5':isToday?'var(--g500)':'var(--s200)';
+
+      html+='<div class="card" style="background:'+bgColor+';border-color:'+borderColor+';margin-bottom:10px;padding:14px">'
+        +'<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:'+(hasContent?'10px':'0')+'">'
+        +'<div>'
+        +'<span style="font-size:14px;font-weight:700;color:'+(isToday?'var(--g700)':isHol?'var(--r600)':'var(--s800)')+'">'+dateLabel+'</span>'
+        +(isToday?'<span class="badge badge-green" style="margin-left:8px">Heute</span>':'')
+        +(isHol?'<span style="font-size:11px;color:var(--r600);margin-left:8px">'+isHol+'</span>':'')
+        +'</div>'
+        +'<button class="btn-sm btn-outline" style="font-size:11px;padding:4px 8px" data-ds="'+ds+'" onclick="openDayNote(this.dataset.ds)">'
+        +(dayNote?'📋 Notiz bearbeiten':'📋 Notiz')
+        +'</button>'
+        +'</div>';
+
+      // Day note
+      if(dayNote){
+        html+='<div style="background:#ede9fe;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:13px;color:#6d28d9">'
+          +'📋 '+dayNote.note+'</div>';
+      }
+
+      // Shifts
+      if(sh.length>0){
+        sh.sort(function(a,b){return (a.start_time||'').localeCompare(b.start_time||'');}).forEach(function(s){
+          const emp=empMap[s.employee_id];
+          html+='<div style="display:flex;align-items:center;justify-content:space-between;'
+            +'padding:8px 12px;background:'+( empColor[s.employee_id]||'#e2e8f0')+';'
+            +'border-radius:8px;margin-bottom:6px">'
+            +'<div style="display:flex;align-items:center;gap:10px">'
+            +'<span style="font-weight:600;font-size:13px;color:var(--s800)">'+(emp?emp.name:'?')+'</span>'
+            +'<span style="font-size:12px;color:var(--s600);font-family:var(--mono)">'
+            +(s.start_time?s.start_time.slice(0,5):'?')+' – '+(s.end_time?s.end_time.slice(0,5):'?')+'</span>'
+            +'<span style="font-size:11px;color:var(--s500)">'+s.shift_type+'</span>'
+            +(s.note?'<span style="font-size:11px;color:var(--s400)">· '+s.note+'</span>':'')
+            +'</div>'
+            +'<button class="btn-sm btn-red" style="font-size:11px;padding:3px 8px" data-sid="'+s.id+'" onclick="deleteShift(this.dataset.sid)">✕</button>'
+            +'</div>';
+        });
+      }
+
+      // Vacation
+      dayVac.forEach(function(v){
+        const emp=empMap[v.employee_id];
+        html+='<div style="display:flex;align-items:center;justify-content:space-between;'
+          +'padding:8px 12px;background:#fde8ff;border-radius:8px;margin-bottom:6px">'
+          +'<span style="font-size:13px;color:#7e22ce">🏖️ <strong>'+(emp?emp.name:'?')+'</strong> · Urlaub</span>'
+          +'</div>';
+      });
+
+      if(!hasContent){
+        html+='<div style="font-size:12px;color:var(--s300)">Keine Einträge</div>';
+      }
+
+      html+='</div>';
+    });
+
+    if(html.indexOf('card" style="background')===html.lastIndexOf('card" style="background')){
+      html+='<div class="card"><p style="color:var(--s400);font-size:13px">Keine Einträge in diesem Monat.</p></div>';
+    }
+
+    document.getElementById('page-content').innerHTML=html;
+
+    window.shiftCalPrev=function(){ calDate=new Date(y,mo-1,1); draw(); };
+    window.shiftCalNext=function(){ calDate=new Date(y,mo+1,1); draw(); };
+    window.deleteShift=async function(id){ await sb.from('shifts').delete().eq('id',id); draw(); };
+    window.openDayNote=async function(date){
       const existingNote=noteMap[date];
-      document.getElementById('modal-container').innerHTML=`
-        <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-          <div class="modal" style="width:480px;max-height:90vh;overflow-y:auto">
-            <div class="modal-title">📅 ${dateLabel}</div>
-
-            <!-- Tagesnotiz -->
-            <div style="background:#f5f3ff;border:1.5px solid #a78bfa;border-radius:12px;padding:14px;margin-bottom:16px">
-              <div style="font-size:12px;font-weight:600;color:#6d28d9;margin-bottom:8px">📋 Tagesnotiz – Was wird heute produziert?</div>
-              <textarea id="day-note-input" rows="3" style="width:100%;padding:8px 10px;border:1.5px solid #c4b5fd;border-radius:8px;font-size:13px;font-family:var(--font);outline:none;resize:vertical;color:var(--s700)" placeholder="z.B. Apfelsaft 1L, Orangensaft 0,5L, Reinigung Linie 2…">${existingNote?.note||''}</textarea>
-              <div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end">
-                ${existingNote?`<button class="btn-sm btn-red" style="font-size:12px;padding:5px 10px" onclick="deleteDayNote('${date}')">🗑 Löschen</button>`:''}
-                <button class="btn-sm" style="background:#7c3aed;color:white;border-color:#7c3aed;font-size:12px;padding:5px 12px" onclick="saveDayNote('${date}')">💾 Speichern</button>
-              </div>
-            </div>
-
-            <!-- Schichten -->
-            <div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:8px">👷 Schichten</div>
-            ${sh.length===0?'<p style="color:var(--s400);font-size:13px;margin-bottom:16px">Keine Schichten geplant.</p>':
-            sh.map(s=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--s50);border-radius:10px;margin-bottom:8px">
-              <div>
-                <div style="font-weight:600;font-size:13px">${empMap[s.employee_id]?.name||'?'}</div>
-                <div style="font-size:12px;color:var(--s500)">${s.shift_type} · ${s.start_time?.slice(0,5)}–${s.end_time?.slice(0,5)}</div>
-                ${s.note?`<div style="font-size:11px;color:var(--s400)">${s.note}</div>`:''}
-              </div>
-              <button class="btn-sm btn-red" style="font-size:11px;padding:4px 9px" onclick="deleteShift(${s.id})">✕</button>
-            </div>`).join('')}
-
-            ${available.length?`<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:6px">Verfügbar:</div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">${available.map(e=>`<span class="badge badge-amber">${e.name}</span>`).join('')}</div></div>`:''}
-            ${(()=>{const dv=approvedVacations.filter(v=>v.date_from<=date&&v.date_to>=date);return dv.length?`<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;color:#7e22ce;margin-bottom:6px">🏖️ Urlaub</div>${dv.map(v=>`<div style="background:#fde8ff;border-radius:8px;padding:8px 12px;margin-bottom:6px;font-size:13px;color:#7e22ce"><strong>${empMap[v.employee_id]?.name||'?'}</strong> · ${new Date(v.date_from).toLocaleDateString('de-DE')} – ${new Date(v.date_to).toLocaleDateString('de-DE')}</div>`).join('')}</div>`:'';})()}
-            <div class="modal-footer"><button class="btn-sm btn-outline" onclick="closeModal()">Schließen</button></div>
-          </div></div>`;
-      window.deleteShift=async(id)=>{ await sb.from('shifts').delete().eq('id',id); closeModal(); draw(); };
-      window.saveDayNote=async(date)=>{
+      const dateLabel=new Date(date).toLocaleDateString('de-DE',{weekday:'long',day:'numeric',month:'long'});
+      document.getElementById('modal-container').innerHTML=
+        '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+        +'<div class="modal">'
+        +'<div class="modal-title">📋 Tagesnotiz – '+dateLabel+'</div>'
+        +'<div class="form-group">'
+        +'<textarea id="day-note-input" rows="4" style="width:100%;padding:8px 10px;border:1.5px solid #c4b5fd;border-radius:8px;font-size:13px;font-family:var(--font);outline:none;resize:vertical;color:var(--s700)" placeholder="z.B. Apfelsaft 1L, Orangensaft 0,5L, Reinigung Linie 2…">'+(existingNote?existingNote.note:'')+'</textarea>'
+        +'</div>'
+        +'<div class="modal-footer">'
+        +(existingNote?'<button class="btn-sm btn-red" data-d="'+date+'" onclick="deleteDayNote(this.dataset.d)">🗑 Löschen</button>':'')
+        +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+        +'<button class="btn-sm" style="background:#7c3aed;color:white;border-color:#7c3aed" data-d="'+date+'" onclick="saveDayNote(this.dataset.d)">💾 Speichern</button>'
+        +'</div></div></div>';
+      window.saveDayNote=async function(date){
         const note=document.getElementById('day-note-input').value.trim();
         if(!note) return;
         const existingNote2=await sb.from('day_notes').select('id').eq('date',date).maybeSingle();
@@ -1297,32 +1333,40 @@ async function renderShifts(){
         }
         closeModal(); draw();
       };
-      window.deleteDayNote=async(date)=>{
+      window.deleteDayNote=async function(date){
         await sb.from('day_notes').delete().eq('date',date);
         closeModal(); draw();
       };
     };
-    window.openAddShift=(emps)=>{
-      document.getElementById('modal-container').innerHTML=`
-        <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-          <div class="modal">
-            <div class="modal-title">✚ Neue Schicht planen</div>
-            <div class="form-group"><label class="form-label">Mitarbeiter</label>
-              <select class="form-select" id="s-emp">${emps.map(e=>`<option value="${e.id}">${e.name}</option>`).join('')}</select></div>
-            <div class="form-group"><label class="form-label">Datum</label><input class="form-input" type="date" id="s-date" value="${todayStr}"></div>
-            <div class="two-col">
-              <div class="form-group"><label class="form-label">Beginn</label><input class="form-input" type="time" id="s-start" value="07:00"></div>
-              <div class="form-group"><label class="form-label">Ende</label><input class="form-input" type="time" id="s-end" value="15:00"></div>
-            </div>
-            <div class="form-group"><label class="form-label">Schichttyp</label>
-              <select class="form-select" id="s-type"><option>Frühschicht</option><option>Spätschicht</option><option>Nachtschicht</option><option>Sonderschicht</option></select></div>
-            <div class="form-group"><label class="form-label">Notiz</label><input class="form-input" id="s-note" placeholder="Optional…"></div>
-            <div class="modal-footer">
-              <button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>
-              <button class="btn-sm btn-green" onclick="saveShift()">Speichern</button>
-            </div>
-          </div></div>`;
-      window.saveShift=async()=>{
+    window.openAddShift=function(){
+      const emps=employees;
+      document.getElementById('modal-container').innerHTML=
+        '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+        +'<div class="modal">'
+        +'<div class="modal-title">✚ Neue Schicht planen</div>'
+        +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+        +'<select class="form-select" id="s-emp">'
+        +emps.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
+        +'</select></div>'
+        +'<div class="form-group"><label class="form-label">Datum</label>'
+        +'<input class="form-input" type="date" id="s-date" value="'+todayStr+'"></div>'
+        +'<div class="two-col">'
+        +'<div class="form-group"><label class="form-label">Beginn</label>'
+        +'<input class="form-input" type="time" id="s-start" value="07:00"></div>'
+        +'<div class="form-group"><label class="form-label">Ende</label>'
+        +'<input class="form-input" type="time" id="s-end" value="15:00"></div>'
+        +'</div>'
+        +'<div class="form-group"><label class="form-label">Schichttyp</label>'
+        +'<select class="form-select" id="s-type">'
+        +'<option>Frühschicht</option><option>Spätschicht</option><option>Nachtschicht</option><option>Sonderschicht</option>'
+        +'</select></div>'
+        +'<div class="form-group"><label class="form-label">Notiz</label>'
+        +'<input class="form-input" id="s-note" placeholder="Optional…"></div>'
+        +'<div class="modal-footer">'
+        +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+        +'<button class="btn-sm btn-green" onclick="saveShift()">Speichern</button>'
+        +'</div></div></div>';
+      window.saveShift=async function(){
         const emp=document.getElementById('s-emp').value;
         const date=document.getElementById('s-date').value;
         const start=document.getElementById('s-start').value;
