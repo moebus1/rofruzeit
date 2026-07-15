@@ -168,6 +168,15 @@ tr:hover td{background:var(--s50)}
 .mob-drawer-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:160}
 .mob-drawer{position:fixed;bottom:-100%;left:0;right:0;background:white;border-radius:20px 20px 0 0;
   padding:16px 16px 90px;z-index:170;transition:.28s cubic-bezier(.4,0,.2,1)}
+
+@media(max-width:640px){
+  /* Hide less important columns on mobile */
+  .hide-mobile{display:none!important}
+  table{font-size:11px}
+  th,td{padding:6px 6px}
+  .stat-value{font-size:20px}
+  .timer-display{font-size:36px}
+}
 @media(max-width:640px){
   /* Bottom navigation bar */
   .sidebar{display:none!important}
@@ -214,6 +223,7 @@ tr:hover td{background:var(--s50)}
   .stat-card{padding:12px}
   .stat-value{font-size:22px}
 }
+@keyframes popIn{0%{transform:scale(0.5);opacity:0}80%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
 </style>
 </head>
 <body>
@@ -606,11 +616,31 @@ async function renderDashboard(){
   let profileMap={};
   employees.forEach(p=>{ profileMap[p.id]=p; });
 
+  // Check if monthly close is due (after 15th, check if last period was closed)
+  const now2=new Date();
+  const isAfter15=now2.getDate()>=15;
+  const prevM=now2.getMonth()===0?12:now2.getMonth();
+  const prevY=now2.getMonth()===0?now2.getFullYear()-1:now2.getFullYear();
+  const [accCheckRes]=await Promise.all([
+    sb.from('time_accounts').select('employee_id').eq('year',prevY).eq('month',prevM)
+  ]);
+  const closedEmps=new Set((accCheckRes.data||[]).map(a=>a.employee_id));
+  const acctEmployees=employees.filter(e=>e.employee_type==='account');
+  const pendingClose=isAfter15&&acctEmployees.filter(e=>!closedEmps.has(e.id));
+
   document.getElementById('page-content').innerHTML=`
     <div class="page-header">
       <div class="page-title">Dashboard</div>
       <div class="page-sub">${today.toLocaleDateString('de-DE',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</div>
     </div>
+    ${pendingClose&&pendingClose.length>0?`
+    <div style="background:#fffbeb;border:1.5px solid var(--a400);border-radius:12px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:gap">
+      <div>
+        <div style="font-weight:600;color:#92400e">⚠️ Monatsabschluss fällig – ${MONTHS[prevM-1]} ${prevY}</div>
+        <div style="font-size:12px;color:#b45309;margin-top:2px">Ausstehend: ${pendingClose.map(e=>e.name).join(', ')}</div>
+      </div>
+      <button class="btn-sm btn-amber" onclick="navigateTo('time-accounts')" style="white-space:nowrap">→ Zur Abrechnung</button>
+    </div>`:''}
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Mitarbeiter</div><div class="stat-value">${employees.length}</div></div>
       <div class="stat-card"><div class="stat-label">Schichten heute</div><div class="stat-value">${todayShifts.length}</div></div>
@@ -662,7 +692,7 @@ async function renderDashboard(){
     </div>
     <div class="card">
       <div class="card-title">📋 Letzte Zeiteinträge</div>
-      <table><thead><tr><th>Mitarbeiter</th><th>Datum</th><th>Arbeitszeit</th><th>Pause</th><th>Brutto</th><th>Netto</th></tr></thead><tbody>
+      <table><thead><tr><th>Mitarbeiter</th><th>Datum</th><th>Arbeitszeit</th><th class="hide-mobile">Pause</th><th class="hide-mobile">Brutto</th><th>Netto</th></tr></thead><tbody>
       ${(()=>{
         return allEntries.slice(0,10).map(function(e){
           try{
@@ -686,8 +716,8 @@ async function renderDashboard(){
               +'<td><strong>'+(emp?emp.name:'?')+'</strong><br><span class="text-sm">'+(emp&&emp.department?emp.department:'')+'</span></td>'
               +'<td>'+new Date(e.date).toLocaleDateString('de-DE')+'</td>'
               +'<td class="text-mono" style="font-size:12px">'+status+'</td>'
-              +'<td style="font-size:11px;color:var(--s500)">'+breakLabel+'</td>'
-              +'<td class="text-mono">'+fmtMins(e.duration_minutes||0)+'</td>'
+              +'<td class="text-mono hide-mobile" style="font-size:11px;color:var(--s500)">'+breakLabel+'</td>'
+              +'<td class="text-mono hide-mobile">'+fmtMins(e.duration_minutes||0)+'</td>'
               +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netMins)+'</strong></td>'
               +'</tr>';
           }catch(err){
@@ -701,7 +731,7 @@ async function renderDashboard(){
 // ── TIMER PAGE ───────────────────────────────────────────────────────────────
 async function renderTimerPage(){
   const [shiftRes, entriesRes, breakRes] = await Promise.all([
-    sb.from('shifts').select('*').eq('employee_id',currentUser.id).eq('date',todayStr).single(),
+    sb.from('shifts').select('*').eq('employee_id',currentUser.id).eq('date',todayStr).maybeSingle(),
     sb.from('time_entries').select('*').eq('employee_id',currentUser.id).eq('date',todayStr),
     sb.from('break_entries').select('*').eq('employee_id',currentUser.id).eq('date',todayStr),
   ]);
@@ -878,7 +908,7 @@ async function renderMyCalendar(){
     const from=`${y}-${pad(mo+1)}-01`, to=`${y}-${pad(mo+1)}-${pad(dim)}`;
     const [sRes,aRes,nRes]=await Promise.all([
       sb.from('shifts').select('*').eq('employee_id',currentUser.id).gte('date',from).lte('date',to),
-      sb.from('availabilities').select('*').eq('employee_id',currentUser.id).single(),
+      sb.from('availabilities').select('*').eq('employee_id',currentUser.id).maybeSingle(),
       sb.from('day_notes').select('*').gte('date',from).lte('date',to)
     ]);
     const myShifts=sRes.data||[];
@@ -1205,18 +1235,20 @@ async function renderShifts(){
     const y=calDate.getFullYear(), mo=calDate.getMonth();
     const dim=getDaysInMonth(y,mo), fd=getFirstDOW(y,mo);
     const from=`${y}-${pad(mo+1)}-01`, to=`${y}-${pad(mo+1)}-${pad(dim)}`;
-    const [sRes,pRes,avRes,vacRes,notesRes]=await Promise.all([
+    const [sRes,pRes,avRes,vacRes,notesRes,recRes]=await Promise.all([
       sb.from('shifts').select('*').gte('date',from).lte('date',to),
       sb.from('profiles').select('*').eq('role','employee'),
       sb.from('availabilities').select('*'),
       sb.from('vacation_requests').select('*').eq('status','approved'),
-      sb.from('day_notes').select('*').gte('date',from).lte('date',to)
+      sb.from('day_notes').select('*').gte('date',from).lte('date',to),
+      sb.from('recurring_shifts').select('*').eq('active',true)
     ]);
     const allShifts=sRes.data||[];
     const employees=pRes.data||[];
     const avails=avRes.data||[];
     const approvedVacations=vacRes.data||[];
     const dayNotes=notesRes.data||[];
+    const recurringShifts=recRes.data||[];
     const noteMap={}; dayNotes.forEach(n=>noteMap[n.date]=n);
     const empMap={}; employees.forEach(e=>empMap[e.id]=e);
     const availMap={}; avails.forEach(a=>availMap[a.employee_id]=a.days||[]);
@@ -1236,6 +1268,7 @@ async function renderShifts(){
       +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
       +'<button class="cal-nav-btn" onclick="shiftCalPrev()">← Zurück</button>'
       +'<button class="cal-nav-btn" onclick="shiftCalNext()">Weiter →</button>'
+      +'<button class="btn-sm btn-outline" id="toggle-all-btn" onclick="window._shiftsShowAll=!window._shiftsShowAll;draw()">📅 '+(window._shiftsShowAll?'Weniger':'Alle Tage')+'</button>'
       +'<button class="btn-sm btn-outline" data-y="'+y+'" data-m="'+(mo+1)+'" onclick="applyRecurring(this.dataset.y,this.dataset.m)">🔁 Regelzeiten</button>'
       +'<button class="btn-sm btn-green" onclick="openAddShift()">+ Neue Schicht</button>'
       +'</div></div></div>';
@@ -1259,11 +1292,13 @@ async function renderShifts(){
       const isWeekend=dow===0||dow===6;
       const isHol=getBavarianHolidays(y)[ds];
       const isToday=ds===todayStr;
-      const hasContent=sh.length>0||dayVac.length>0||dayNote;
+      const dayRec=recMap[ds]||[];
+      const recNotYetAdded=dayRec.filter(function(r){return !sh.find(function(s){return s.employee_id===r.employee_id;});});
+      const hasContent=sh.length>0||dayVac.length>0||dayNote||recNotYetAdded.length>0;
 
-      // Always show today; show others only if they have content or are upcoming (within 14 days)
+      // Show days with content, today, and upcoming 14 days – or ALL if showAll is set
       const daysAhead=Math.round((new Date(ds)-new Date(todayStr))/86400000);
-      const show=hasContent||isToday||(daysAhead>=0&&daysAhead<=14);
+      const show=window._shiftsShowAll||hasContent||isToday||(daysAhead>=0&&daysAhead<=14);
       if(!show) return;
 
       const dateLabel=new Date(ds).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'});
@@ -1316,6 +1351,23 @@ async function renderShifts(){
           +'</div>';
       });
 
+      // Show recurring shifts not yet added
+      if(recNotYetAdded.length>0){
+        recNotYetAdded.forEach(function(r){
+          const emp=empMap[r.employee_id];
+          html+='<div style="display:flex;align-items:center;justify-content:space-between;'
+            +'padding:7px 12px;background:repeating-linear-gradient(45deg,#f8fafc,#f8fafc 5px,#f1f5f9 5px,#f1f5f9 10px);'
+            +'border-radius:8px;margin-bottom:6px;border:1px dashed var(--s300)">'
+            +'<div style="display:flex;align-items:center;gap:10px">'
+            +'<span style="font-size:12px;color:var(--s400)">🔁</span>'
+            +'<span style="font-weight:500;font-size:13px;color:var(--s500)">'+(emp?emp.name:'?')+'</span>'
+            +'<span style="font-size:12px;color:var(--s400);font-family:var(--mono)">'+r.start_time.slice(0,5)+' – '+r.end_time.slice(0,5)+'</span>'
+            +'<span style="font-size:11px;color:var(--s400)">Regelzeit</span>'
+            +'</div>'
+            +'<button class="btn-sm btn-outline" style="font-size:11px;padding:3px 8px" data-eid="'+r.employee_id+'" data-ds="'+ds+'" data-st="'+r.start_time+'" data-et="'+r.end_time+'" onclick="addRecurringShift(this.dataset)">+ Eintragen</button>'
+            +'</div>';
+        });
+      }
       if(!hasContent){
         html+='<div style="font-size:12px;color:var(--s300)">Keine Einträge</div>';
       }
@@ -1541,7 +1593,7 @@ async function renderUsers(){
 async function renderVacationEmployee(){
   const [vacRes, profileRes] = await Promise.all([
     sb.from('vacation_requests').select('*').eq('employee_id',currentUser.id).order('created_at',{ascending:false}),
-    sb.from('profiles').select('vacation_days_per_year').eq('id',currentUser.id).single()
+    sb.from('profiles').select('vacation_days_per_year').eq('id',currentUser.id).maybeSingle()
   ]);
   const requests = vacRes.data||[];
   const totalDays = profileRes.data?.vacation_days_per_year||0;
@@ -2570,13 +2622,18 @@ async function handleQRStamp(){
 }
 
 function showStampFeedback(action,msg,isIn){
+  const now=new Date();
+  const timeStr=pad(now.getHours())+':'+pad(now.getMinutes());
   document.getElementById('page-content').innerHTML=
-    '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;text-align:center;padding:24px">'
-    +'<div style="font-size:80px;margin-bottom:16px">'+(isIn?'✅':'👋')+'</div>'
-    +'<div style="font-size:24px;font-weight:700;color:'+(isIn?'var(--g700)':'var(--s700)')+';margin-bottom:8px">Erfolgreich '+action+'!</div>'
-    +'<div style="font-size:15px;color:var(--s500);max-width:300px;line-height:1.5">'+msg+'</div>'
-    +'<button class="btn-sm btn-green" style="margin-top:24px" onclick="goHome()">Zur Übersicht</button>'
+    '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;text-align:center;padding:24px;background:'+(isIn?'var(--g50)':'var(--s50)')+'">'
+    +'<div style="font-size:100px;margin-bottom:20px;animation:popIn .3s ease">'+(isIn?'✅':'👋')+'</div>'
+    +'<div style="font-size:28px;font-weight:800;color:'+(isIn?'var(--g700)':'var(--s700)')+';margin-bottom:8px">'+( isIn?'Eingestempelt!':'Ausgestempelt!')+'</div>'
+    +'<div style="font-size:40px;font-weight:700;font-family:var(--mono);color:'+(isIn?'var(--g600)':'var(--s600)')+';margin:8px 0">'+timeStr+' Uhr</div>'
+    +'<div style="font-size:15px;color:var(--s400);max-width:280px;line-height:1.5;margin-bottom:24px">'+msg+'</div>'
+    +'<button class="btn-sm btn-green" style="padding:14px 28px;font-size:16px" onclick="goHome()">Zur Übersicht</button>'
     +'</div>';
+  // Auto-redirect after 4 seconds
+  setTimeout(function(){ if(document.querySelector('[onclick="goHome()"]')) goHome(); }, 4000);
 }
 
 
@@ -2640,6 +2697,16 @@ async function quickStamp(action){
   }
   // Refresh dashboard after 1.5s
   setTimeout(renderDashboard, 1500);
+}
+
+
+async function addRecurringShift(ds){
+  await sb.from('shifts').insert({
+    employee_id:ds.eid, date:ds.ds,
+    start_time:ds.st, end_time:ds.et,
+    shift_type:'Regelzeit', note:''
+  });
+  navigateTo('shifts');
 }
 
 
