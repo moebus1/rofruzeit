@@ -1280,7 +1280,15 @@ async function renderShifts(){
           +'<div style="width:10px;height:10px;background:'+empColor[e.id]+';border-radius:2px"></div>'+e.name+'</div>';
       }).join('')+'</div>';
 
-    // Day rows – only days with content + today + next 7 days
+    // Build recurring shift map for this month
+    const recMap={};
+    for(let ri=1;ri<=dim;ri++){
+      const rds=dStr(ri);
+      const rdow=new Date(rds).getDay()||7; // 1=Mo..7=So
+      const dayRecs=recurringShifts.filter(function(r){return r.day_of_week===rdow;});
+      if(dayRecs.length>0) recMap[rds]=dayRecs;
+    }
+    // Day rows
     const allDays=[];
     for(let i=1;i<=dim;i++) allDays.push(dStr(i));
 
