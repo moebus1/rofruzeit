@@ -1967,8 +1967,8 @@ async function renderTimeAccounts(){
     const to=ds.to;
     const d=new Date(to);
     const year=d.getFullYear(), month=d.getMonth()+1;
-    if(!confirm('Abschluss für '+employees.find(function(e){return e.id===empId;})?.name+' buchen?
-Gearbeitet: '+netto+'h | Auszahlung: '+soll+'h | Neuer Saldo: '+(bal>=0?'+':'')+bal+'h')) return;
+    const empName=employees.find(function(e){return e.id===empId;})||{name:'?'};
+    if(!confirm('Abschluss für '+empName.name+' buchen? Gearbeitet: '+netto+'h | Auszahlung: '+soll+'h | Neuer Saldo: '+(bal>=0?'+':'')+bal+'h')) return;
     const {error}=await sb.from('time_accounts').upsert({
       employee_id:empId,year,month,
       hours_target:soll,hours_worked:netto,
@@ -2072,3 +2072,11 @@ Gearbeitet: '+netto+'h | Auszahlung: '+soll+'h | Neuer Saldo: '+(bal>=0?'+':'')+
     };
   };
 }
+
+// ── BOOT ─────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', function(){
+  initApp();
+});
+</script>
+</body>
+</html>
