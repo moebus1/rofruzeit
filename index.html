@@ -496,8 +496,8 @@ function showApp(){
 
 // ── SIDEBAR ─────────────────────────────────────────────────────────────────
 const NAV = {
-  admin:    [{id:'dashboard',icon:'📊',label:'Dashboard'},{id:'users',icon:'👥',label:'Mitarbeiter'},{id:'shifts',icon:'📅',label:'Dienstplan'},{id:'reports',icon:'📈',label:'Auswertungen'},{id:'vacation-admin',icon:'🏖️',label:'Urlaubsanträge'},{id:'time-accounts',icon:'⚖️',label:'Arbeitszeitkonten'},{id:'edit-times',icon:'✏️',label:'Zeiten korr.'},{id:'recurring-shifts',icon:'🔁',label:'Regelzeiten'},{id:'qr-admin',icon:'📲',label:'QR-Stempel'}],
-  planner:  [{id:'dashboard',icon:'📊',label:'Dashboard'},{id:'users',icon:'👥',label:'Mitarbeiter'},{id:'shifts',icon:'📅',label:'Dienstplan'},{id:'reports',icon:'📈',label:'Auswertungen'},{id:'vacation-admin',icon:'🏖️',label:'Urlaubsanträge'},{id:'time-accounts',icon:'⚖️',label:'Arbeitszeitkonten'},{id:'edit-times',icon:'✏️',label:'Zeiten korr.'},{id:'recurring-shifts',icon:'🔁',label:'Regelzeiten'},{id:'availability',icon:'🗓️',label:'Verfügbarkeiten'},{id:'qr-admin',icon:'📲',label:'QR-Stempel'}],
+  admin:    [{id:'dashboard',icon:'📊',label:'Dashboard'},{id:'users',icon:'👥',label:'Mitarbeiter'},{id:'shifts',icon:'📅',label:'Dienstplan'},{id:'reports',icon:'📈',label:'Auswertungen'},{id:'vacation-admin',icon:'🏖️',label:'Urlaubsanträge'},{id:'time-accounts',icon:'⚖️',label:'Abrechnung'},{id:'edit-times',icon:'✏️',label:'Zeiten korr.'},{id:'recurring-shifts',icon:'🔁',label:'Regelzeiten'},{id:'qr-admin',icon:'📲',label:'QR-Stempel'}],
+  planner:  [{id:'dashboard',icon:'📊',label:'Dashboard'},{id:'users',icon:'👥',label:'Mitarbeiter'},{id:'shifts',icon:'📅',label:'Dienstplan'},{id:'reports',icon:'📈',label:'Auswertungen'},{id:'vacation-admin',icon:'🏖️',label:'Urlaubsanträge'},{id:'time-accounts',icon:'⚖️',label:'Abrechnung'},{id:'edit-times',icon:'✏️',label:'Zeiten korr.'},{id:'recurring-shifts',icon:'🔁',label:'Regelzeiten'},{id:'availability',icon:'🗓️',label:'Verfügbarkeiten'},{id:'qr-admin',icon:'📲',label:'QR-Stempel'}],
   employee: [{id:'dashboard',icon:'⏱️',label:'Stempeln'},{id:'my-calendar',icon:'📅',label:'Kalender'},{id:'my-times',icon:'📋',label:'Zeiten'},{id:'availability',icon:'✅',label:'Verfügbar'},{id:'vacation',icon:'🏖️',label:'Urlaub'},{id:'my-account',icon:'⚖️',label:'Zeitkonto'},{id:'settings',icon:'⚙️',label:'Einstellungen'}],
 };
 function renderSidebar(){
@@ -1731,228 +1731,265 @@ async function renderVacationAdmin(){
 
 // ── MY TIME ACCOUNT (Employee) ───────────────────────────────────────────────
 async function renderMyTimeAccount(){
-  const [profileRes, accountsRes, entriesRes] = await Promise.all([
+  const [profileRes,accountsRes,entriesRes,breaksRes,adjustRes]=await Promise.all([
     sb.from('profiles').select('*').eq('id',currentUser.id).single(),
     sb.from('time_accounts').select('*').eq('employee_id',currentUser.id).order('year',{ascending:false}).order('month',{ascending:false}),
-    sb.from('time_entries').select('*').eq('employee_id',currentUser.id)
+    sb.from('time_entries').select('*').eq('employee_id',currentUser.id),
+    sb.from('break_entries').select('*').eq('employee_id',currentUser.id).not('pause_end','is',null),
+    sb.from('account_adjustments').select('*').eq('employee_id',currentUser.id).order('date',{ascending:false})
   ]);
   const profile=profileRes.data;
   const accounts=accountsRes.data||[];
+  const allEntries=entriesRes.data||[];
+  const allBreaks=breaksRes.data||[];
+  const adjustments=adjustRes.data||[];
 
-  if(profile?.employee_type!=='account'){
-    document.getElementById('page-content').innerHTML=`
-      <div class="page-header"><div class="page-title">Zeitkonto</div></div>
-      <div class="card" style="background:var(--s50)">
-        <div style="font-size:14px;color:var(--s500);text-align:center;padding:20px">
-          Du bist als <strong>Minijobber</strong> eingestellt.<br>Für dich wird kein Arbeitszeitkonto geführt.
-        </div>
-      </div>`;
+  if(!profile||profile.employee_type!=='account'){
+    document.getElementById('page-content').innerHTML=
+      '<div class="page-header"><div class="page-title">Zeitkonto</div></div>'
+      +'<div class="card" style="background:var(--s50)">'
+      +'<div style="font-size:14px;color:var(--s500);text-align:center;padding:20px">'
+      +'Du bist als <strong>Minijobber</strong> eingestellt.<br>Für dich wird kein Arbeitszeitkonto geführt.'
+      +'</div></div>';
     return;
   }
 
   const weeklyH=profile.weekly_hours||0;
-  const monthlyH=Math.round((weeklyH*52/12)*10)/10;
+  const monthlyH=Math.round(weeklyH*52/12*10)/10;
 
-  // current month balance
+  // Current period: 15th prev month to today
   const now=new Date();
-  const curY=now.getFullYear(), curM=now.getMonth()+1;
-  const curEntries=entriesRes.data.filter(e=>{ const d=new Date(e.date); return d.getFullYear()===curY&&d.getMonth()+1===curM; });
-  const workedThisMonth=curEntries.reduce((a,e)=>a+(e.duration_minutes||0),0)/60;
-  const curAccount=accounts.find(a=>a.year===curY&&a.month===curM);
-  const balance=curAccount?.balance||0;
+  const prevM15Y=now.getMonth()===0?now.getFullYear()-1:now.getFullYear();
+  const prevM15M=now.getMonth()===0?12:now.getMonth();
+  const periodFrom=prevM15Y+'-'+pad(prevM15M)+'-15';
+  const periodTo=fmtDate(now);
 
-  document.getElementById('page-content').innerHTML=`
-    <div class="page-header"><div class="page-title">Mein Zeitkonto</div><div class="page-sub">Arbeitszeitkonto – Übersicht</div></div>
-    <div class="stat-grid">
-      <div class="stat-card"><div class="stat-label">Wochensoll</div><div class="stat-value text-mono">${weeklyH}h</div></div>
-      <div class="stat-card"><div class="stat-label">Monatssoll</div><div class="stat-value text-mono">${monthlyH}h</div></div>
-      <div class="stat-card"><div class="stat-label">Diesen Monat gearbeitet</div><div class="stat-value text-mono">${Math.round(workedThisMonth*10)/10}h</div></div>
-      <div class="stat-card"><div class="stat-label">Kontostand</div><div class="stat-value text-mono" style="color:${balance>=0?'var(--g600)':'var(--r600)'}">${balance>=0?'+':''}${Math.round(balance*10)/10}h</div></div>
-    </div>
-    <div class="card">
-      <div class="card-title">📊 Monatsverlauf</div>
-      ${accounts.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Monatsdaten vorhanden. Der Admin bucht die monatlichen Stunden ab.</p>':
-      `<table><thead><tr><th>Monat</th><th>Soll</th><th>Gearbeitet</th><th>Ausgezahlt</th><th>Saldo</th></tr></thead><tbody>
-      ${accounts.map(a=>`<tr>
-        <td>${MONTHS[a.month-1]} ${a.year}</td>
-        <td class="text-mono">${a.hours_target}h</td>
-        <td class="text-mono">${Math.round(a.hours_worked*10)/10}h</td>
-        <td class="text-mono">${a.hours_paid_out}h</td>
-        <td class="text-mono" style="font-weight:600;color:${a.balance>=0?'var(--g600)':'var(--r600)'}">${a.balance>=0?'+':''}${Math.round(a.balance*10)/10}h</td>
-        </tr>`).join('')}
-      </tbody></table>`}
-    </div>`;
+  // Netto worked in current period
+  const periodEntries=allEntries.filter(function(e){return e.date>=periodFrom&&e.date<=periodTo;});
+  const periodBreaks=allBreaks.filter(function(b){return b.date>=periodFrom&&b.date<=periodTo;});
+  const nettoMins=periodEntries.reduce(function(sum,e){
+    return sum+calcNettoMins(e,periodBreaks.filter(function(b){return b.date===e.date;}));
+  },0);
+  const nettoH=Math.round(nettoMins/60*10)/10;
+
+  // Latest account balance + adjustments
+  const latestAcc=accounts[0];
+  const adjTotal=adjustments.reduce(function(s,a){return s+a.hours;},0);
+  const kontostand=Math.round(((latestAcc?latestAcc.balance:0)+adjTotal)*10)/10;
+
+  document.getElementById('page-content').innerHTML=
+    '<div class="page-header"><div class="page-title">Mein Zeitkonto</div>'
+    +'<div class="page-sub">Abrechnungszeitraum: '+new Date(periodFrom).toLocaleDateString('de-DE')+' – '+now.toLocaleDateString('de-DE')+'</div></div>'
+    +'<div class="stat-grid">'
+    +'<div class="stat-card"><div class="stat-label">Wochensoll</div><div class="stat-value text-mono">'+weeklyH+'h</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Monatssoll</div><div class="stat-value text-mono">'+monthlyH+'h</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Netto diese Periode</div><div class="stat-value text-mono" style="color:var(--g700)">'+nettoH+'h</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Kontostand</div><div class="stat-value text-mono" style="color:'+(kontostand>=0?'var(--g600)':'var(--r600)')+'">'+( kontostand>=0?'+':'')+kontostand+'h</div></div>'
+    +'</div>'
+    +'<div class="card"><div class="card-title">📊 Abrechnungshistorie</div>'
+    +(accounts.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Abschlüsse vorhanden.</p>'
+    :'<table><thead><tr><th>Monat</th><th>Gearbeitet</th><th>Ausgezahlt</th><th>Saldo</th></tr></thead><tbody>'
+    +accounts.map(function(a){
+      return '<tr>'
+        +'<td>'+MONTHS[a.month-1]+' '+a.year+'</td>'
+        +'<td class="text-mono">'+Math.round(a.hours_worked*10)/10+'h</td>'
+        +'<td class="text-mono">'+a.hours_paid_out+'h</td>'
+        +'<td class="text-mono" style="font-weight:600;color:'+(a.balance>=0?'var(--g600)':'var(--r600)')+'">'+( a.balance>=0?'+':'')+Math.round(a.balance*10)/10+'h</td>'
+        +'</tr>';
+    }).join('')+'</tbody></table>')
+    +(adjustments.length>0?'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--s100)">'
+    +'<div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:6px">Manuelle Anpassungen</div>'
+    +'<table><thead><tr><th>Datum</th><th>Stunden</th><th>Grund</th></tr></thead><tbody>'
+    +adjustments.map(function(a){
+      return '<tr>'
+        +'<td>'+new Date(a.date).toLocaleDateString('de-DE')+'</td>'
+        +'<td class="text-mono" style="color:'+(a.hours>=0?'var(--g600)':'var(--r600)')+'">'+( a.hours>=0?'+':'')+a.hours+'h</td>'
+        +'<td style="font-size:12px;color:var(--s500)">'+a.reason+'</td>'
+        +'</tr>';
+    }).join('')+'</tbody></table></div>':'')
+    +'</div>';
 }
 
-// ── TIME ACCOUNTS ADMIN ──────────────────────────────────────────────────────
+// ── ABRECHNUNG (Admin/Planner) ───────────────────────────────────────────────
 async function renderTimeAccounts(){
   const now=new Date();
   const curY=now.getFullYear(), curM=now.getMonth()+1;
 
-  const [empRes,accountsRes,entriesRes,breaksRes,adjustRes]=await Promise.all([
+  // Default billing period: 15th prev month to 15th this month
+  const prevM15Y=curM===1?curY-1:curY;
+  const prevM15M=curM===1?12:curM-1;
+  const defFrom=prevM15Y+'-'+pad(prevM15M)+'-15';
+  const defTo=curY+'-'+pad(curM)+'-15';
+
+  const [empRes,accountsRes,entriesRes,breaksRes,adjustRes,vacRes]=await Promise.all([
     sb.from('profiles').select('*').eq('employee_type','account'),
     sb.from('time_accounts').select('*'),
     sb.from('time_entries').select('*'),
     sb.from('break_entries').select('*').not('pause_end','is',null),
-    sb.from('account_adjustments').select('*').order('date',{ascending:false})
+    sb.from('account_adjustments').select('*').order('date',{ascending:false}),
+    sb.from('vacation_requests').select('*').eq('status','approved')
   ]);
   const employees=empRes.data||[], accounts=accountsRes.data||[];
   const entries=entriesRes.data||[], breaks=breaksRes.data||[];
   const adjustments=adjustRes.data||[];
+  const vacations=vacRes.data||[];
 
-  // Check if auto monthly close is due (1st of month, previous month not yet closed)
-  const prevM=curM===1?12:curM-1;
-  const prevY=curM===1?curY-1:curY;
-  const autoCloseInfo=[];
-  employees.forEach(function(emp){
-    const already=accounts.find(function(a){return a.employee_id===emp.id&&a.year===prevY&&a.month===prevM;});
-    if(!already) autoCloseInfo.push(emp.name);
-  });
+  // Billing period state
+  let billFrom=defFrom, billTo=defTo;
 
-  // Build page
-  var html='<div class="page-header"><div class="page-header-row">'
-    +'<div><div class="page-title">Arbeitszeitkonten</div>'
-    +'<div class="page-sub">Kontoübersicht & Monatsabschlüsse</div></div>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
-    +'<button class="btn-sm btn-outline" onclick="openStartBalance()">⚡ Startsaldo</button>'
-    +'<button class="btn-sm btn-outline" onclick="openAccountAdjust()">✏️ Konto anpassen</button>'
-    +'<button class="btn-sm btn-green" onclick="openMonthClose()">📅 Monatsabschluss</button>'
-    +'</div></div></div>';
-
-  // Auto-close hint
-  if(autoCloseInfo.length>0){
-    html+='<div class="card" style="background:#fffbeb;border-color:var(--a400)">'
-      +'<div style="font-size:13px;color:#92400e">⚠️ <strong>Monatsabschluss ausstehend</strong> für '
-      +MONTHS[prevM-1]+' '+prevY+': '+autoCloseInfo.join(', ')
-      +'<br><button class="btn-sm btn-amber" style="margin-top:8px" onclick="autoCloseAll()">🔄 Alle automatisch abschließen</button></div></div>';
+  function calcEmpData(emp, from, to){
+    const weeklyH=emp.weekly_hours||0;
+    const monthlyH=Math.round(weeklyH*52/12*10)/10;
+    // Netto worked in period
+    const ee=entries.filter(function(e){return e.employee_id===emp.id&&e.date>=from&&e.date<=to;});
+    const bb=breaks.filter(function(b){return b.employee_id===emp.id&&b.date>=from&&b.date<=to;});
+    const nettoMins=ee.reduce(function(sum,e){
+      return sum+calcNettoMins(e,bb.filter(function(b){return b.date===e.date;}));
+    },0);
+    const nettoH=Math.round(nettoMins/60*10)/10;
+    // Vacation days in period (only weekdays)
+    const empVac=vacations.filter(function(v){
+      return v.employee_id===emp.id&&v.date_from<=to&&v.date_to>=from;
+    });
+    let vacDays=0;
+    empVac.forEach(function(v){
+      let cur=new Date(Math.max(new Date(v.date_from),new Date(from)));
+      const end=new Date(Math.min(new Date(v.date_to),new Date(to)));
+      while(cur<=end){const d=cur.getDay();if(d!==0&&d!==6)vacDays++;cur.setDate(cur.getDate()+1);}
+    });
+    const dailyH=Math.round(weeklyH/5*100)/100;
+    const vacH=Math.round(vacDays*dailyH*10)/10;
+    const totalH=Math.round((nettoH+vacH)*10)/10;
+    // Adjustments
+    const empAdj=adjustments.filter(function(a){return a.employee_id===emp.id&&a.date>=from&&a.date<=to;});
+    const adjH=empAdj.reduce(function(s,a){return s+a.hours;},0);
+    const totalWithAdj=Math.round((totalH+adjH)*10)/10;
+    // Latest balance
+    const empAccs=accounts.filter(function(a){return a.employee_id===emp.id;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
+    const prevBalance=empAccs[0]?empAccs[0].balance:0;
+    const newBalance=Math.round((prevBalance+totalWithAdj-monthlyH)*10)/10;
+    return {weeklyH,monthlyH,nettoH,vacDays,vacH,adjH,totalWithAdj,prevBalance,newBalance,ee,empAdj};
   }
 
-  if(employees.length===0){
-    html+='<div class="card"><p style="color:var(--s400);font-size:13px">Noch keine Mitarbeiter mit Zeitkonto.</p></div>';
-  } else {
+  function buildRows(from, to){
+    var html='';
+    if(employees.length===0){
+      return '<div class="card"><p style="color:var(--s400);font-size:13px">Keine Festangestellten gefunden.</p></div>';
+    }
     employees.forEach(function(emp){
-      const weeklyH=emp.weekly_hours||0;
-      const monthlyH=Math.round(weeklyH*52/12*10)/10;
-      const empEntries=entries.filter(function(e){return e.employee_id===emp.id;});
-      const empBreaks=breaks.filter(function(b){return b.employee_id===emp.id;});
+      const d=calcEmpData(emp,from,to);
+      const empAccs=accounts.filter(function(a){return a.employee_id===emp.id;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
       const empAdj=adjustments.filter(function(a){return a.employee_id===emp.id;});
-      const empAccounts=accounts.filter(function(a){return a.employee_id===emp.id;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
-
-      // Current month netto worked
-      const curEntries=empEntries.filter(function(e){
-        const d=new Date(e.date); return d.getFullYear()===curY&&d.getMonth()+1===curM;
-      });
-      const curNetto=curEntries.reduce(function(sum,e){
-        const eBreaks=empBreaks.filter(function(b){return b.date===e.date;});
-        return sum+calcNettoMins(e,eBreaks);
-      },0)/60;
-
-      // Latest balance = last account balance + adjustments since then
-      const latestAcc=empAccounts[0];
-      const adjTotal=empAdj.reduce(function(a,d){return a+d.hours;},0);
-      const latestBalance=Math.round(((latestAcc?latestAcc.balance:0)+adjTotal)*10)/10;
+      const totalAdjAll=empAdj.reduce(function(s,a){return s+a.hours;},0);
+      const latestAcc=empAccs[0];
+      const displayBalance=Math.round(((latestAcc?latestAcc.balance:0)+totalAdjAll)*10)/10;
 
       html+='<div class="card">'
         +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">'
-        +'<div><div style="font-weight:600;font-size:15px">'+emp.name+'</div>'
-        +'<div class="text-sm">'+(emp.department||'')+' · '+weeklyH+'h/Woche · Monatssoll: '+monthlyH+'h</div></div>'
+        +'<div><div style="font-weight:700;font-size:16px">'+emp.name+'</div>'
+        +'<div class="text-sm">'+(emp.department||'')+' · '+d.weeklyH+'h/Woche · Monatssoll: '+d.monthlyH+'h</div></div>'
         +'<div style="text-align:right">'
-        +'<div style="font-size:11px;color:var(--s400)">Kontostand</div>'
-        +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+(latestBalance>=0?'var(--g600)':'var(--r600)')+'">'+( latestBalance>=0?'+':'')+latestBalance+'h</div>'
+        +'<div style="font-size:11px;color:var(--s400)">Aktueller Kontostand</div>'
+        +'<div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+(displayBalance>=0?'var(--g600)':'var(--r600)')+'">'+( displayBalance>=0?'+':'')+displayBalance+'h</div>'
         +'</div></div>'
-        +'<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">'
-        +'<div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:90px">'
-        +'<div style="font-size:11px;color:var(--s400)">Netto diesen Monat</div>'
-        +'<div style="font-family:var(--mono);font-weight:600;font-size:15px;color:var(--s700)">'+Math.round(curNetto*10)/10+'h</div></div>'
-        +'<div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:90px">'
-        +'<div style="font-size:11px;color:var(--s400)">Soll/Monat</div>'
-        +'<div style="font-family:var(--mono);font-weight:600;font-size:15px;color:var(--s700)">'+monthlyH+'h</div></div>'
-        +'<div style="background:var(--s50);border-radius:8px;padding:10px 14px;flex:1;min-width:90px">'
-        +'<div style="font-size:11px;color:var(--s400)">Abschlüsse</div>'
-        +'<div style="font-family:var(--mono);font-weight:600;font-size:15px;color:var(--s700)">'+empAccounts.length+'</div></div>'
-        +'</div>';
-
-      // Accounts table
-      if(empAccounts.length>0){
-        html+='<table><thead><tr><th>Monat</th><th>Soll</th><th>Netto gearbeitet</th><th>Abgezogen (Gehalt)</th><th>Saldo</th></tr></thead><tbody>';
-        empAccounts.slice(0,6).forEach(function(a){
-          html+='<tr>'
-            +'<td>'+MONTHS[a.month-1]+' '+a.year+'</td>'
-            +'<td class="text-mono">'+a.hours_target+'h</td>'
+        // Period breakdown
+        +'<div style="background:var(--s50);border-radius:10px;padding:14px;margin-bottom:14px">'
+        +'<div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:10px">Abrechnungszeitraum: '+new Date(from).toLocaleDateString('de-DE')+' – '+new Date(to).toLocaleDateString('de-DE')+'</div>'
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px">'
+        +'<div style="background:white;border-radius:8px;padding:10px">'
+        +'<div style="font-size:10px;color:var(--s400)">Netto gearbeitet</div>'
+        +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--s800)">'+d.nettoH+'h</div></div>'
+        +(d.vacDays>0?'<div style="background:white;border-radius:8px;padding:10px">'
+        +'<div style="font-size:10px;color:var(--s400)">Urlaub ('+d.vacDays+' Tage)</div>'
+        +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#7c3aed">+'+d.vacH+'h</div></div>':'')
+        +(d.adjH!==0?'<div style="background:white;border-radius:8px;padding:10px">'
+        +'<div style="font-size:10px;color:var(--s400)">Anpassungen</div>'
+        +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+(d.adjH>=0?'var(--g600)':'var(--r600)')+'">'+( d.adjH>=0?'+':'')+d.adjH+'h</div></div>':'')
+        +'<div style="background:var(--g50);border:1.5px solid var(--g200);border-radius:8px;padding:10px">'
+        +'<div style="font-size:10px;color:var(--g700)">Gesamt gutgeschrieben</div>'
+        +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--g700)">'+d.totalWithAdj+'h</div></div>'
+        +'<div style="background:white;border-radius:8px;padding:10px;border:1.5px solid var(--s200)">'
+        +'<div style="font-size:10px;color:var(--s400)">Monatssoll (Auszahlung)</div>'
+        +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--r600)">−'+d.monthlyH+'h</div></div>'
+        +'<div style="background:'+(d.newBalance>=0?'var(--g50)':'var(--r50)')+';border:1.5px solid '+(d.newBalance>=0?'var(--g300)':'#fca5a5')+';border-radius:8px;padding:10px">'
+        +'<div style="font-size:10px;color:'+(d.newBalance>=0?'var(--g700)':'var(--r600)')+'">Neuer Saldo</div>'
+        +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+(d.newBalance>=0?'var(--g700)':'var(--r600)')+'">'+( d.newBalance>=0?'+':'')+d.newBalance+'h</div></div>'
+        +'</div></div>'
+        +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+        +'<button class="btn-sm btn-outline" style="font-size:12px" data-eid="'+emp.id+'" onclick="openAccountAdjust(this.dataset.eid)">✏️ Anpassen</button>'
+        +'<button class="btn-sm btn-green" style="font-size:12px" data-eid="'+emp.id+'" data-from="'+from+'" data-to="'+to+'" data-netto="'+d.totalWithAdj+'" data-soll="'+d.monthlyH+'" data-bal="'+d.newBalance+'" onclick="doMonthClose(this.dataset)">✅ Abschluss buchen</button>'
+        +'</div>'
+        // History
+        +(empAccs.length>0?'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--s100)">'
+        +'<div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:8px">Abrechnungshistorie</div>'
+        +'<table><thead><tr><th>Zeitraum</th><th>Gearbeitet</th><th>Auszahlung</th><th>Saldo</th></tr></thead><tbody>'
+        +empAccs.slice(0,5).map(function(a){
+          return '<tr>'
+            +'<td style="font-size:12px">'+MONTHS[a.month-1]+' '+a.year+'</td>'
             +'<td class="text-mono">'+Math.round(a.hours_worked*10)/10+'h</td>'
             +'<td class="text-mono">'+a.hours_paid_out+'h</td>'
             +'<td class="text-mono" style="font-weight:600;color:'+(a.balance>=0?'var(--g600)':'var(--r600)')+'">'+( a.balance>=0?'+':'')+Math.round(a.balance*10)/10+'h</td>'
             +'</tr>';
-        });
-        html+='</tbody></table>';
-      } else {
-        html+='<p style="font-size:12px;color:var(--s400)">Noch kein Monatsabschluss.</p>';
-      }
-
-      // Adjustments
-      if(empAdj.length>0){
-        html+='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--s100)">'
-          +'<div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:6px">Manuelle Anpassungen</div>'
-          +'<table><thead><tr><th>Datum</th><th>Stunden</th><th>Grund</th></tr></thead><tbody>';
-        empAdj.slice(0,5).forEach(function(a){
-          html+='<tr>'
-            +'<td>'+new Date(a.date).toLocaleDateString('de-DE')+'</td>'
-            +'<td class="text-mono" style="color:'+(a.hours>=0?'var(--g600)':'var(--r600)')+'">'+( a.hours>=0?'+':'')+a.hours+'h</td>'
-            +'<td style="font-size:12px;color:var(--s500)">'+a.reason+'</td>'
-            +'</tr>';
-        });
-        html+='</tbody></table></div>';
-      }
-
-      html+='</div>';
+        }).join('')
+        +'</tbody></table></div>':'')
+        +'</div>';
     });
+    return html;
   }
 
-  document.getElementById('page-content').innerHTML=html;
+  document.getElementById('page-content').innerHTML=
+    '<div class="page-header"><div class="page-header-row">'
+    +'<div><div class="page-title">Abrechnung</div>'
+    +'<div class="page-sub">Abrechnungszeitraum 15. – 15.</div></div>'
+    +'<button class="btn-sm btn-outline" onclick="openAccountAdjust()">✏️ Konto anpassen</button>'
+    +'</div></div>'
+    +'<div class="card" style="margin-bottom:16px">'
+    +'<div class="card-title">📅 Abrechnungszeitraum</div>'
+    +'<div class="two-col">'
+    +'<div class="form-group"><label class="form-label">Von</label>'
+    +'<input class="form-input" type="date" id="bill-from" value="'+billFrom+'" onchange="window._billFrom=this.value;window.refreshBilling()"></div>'
+    +'<div class="form-group"><label class="form-label">Bis</label>'
+    +'<input class="form-input" type="date" id="bill-to" value="'+billTo+'" onchange="window._billTo=this.value;window.refreshBilling()"></div>'
+    +'</div></div>'
+    +'<div id="billing-rows">'+buildRows(billFrom,billTo)+'</div>';
 
-  // ── Auto close all ────────────────────────────────────────────────────────
-  window.autoCloseAll=async function(){
-    if(!confirm('Automatisch Monatsabschluss für '+MONTHS[prevM-1]+' '+prevY+' für alle MA durchführen?')) return;
-    const from=prevY+'-'+pad(prevM)+'-01';
-    const to=prevY+'-'+pad(prevM)+'-'+pad(getDaysInMonth(prevY,prevM-1));
-    const [mEntriesRes,mBreaksRes]=await Promise.all([
-      sb.from('time_entries').select('*').gte('date',from).lte('date',to),
-      sb.from('break_entries').select('*').gte('date',from).lte('date',to).not('pause_end','is',null)
-    ]);
-    const mEntries=mEntriesRes.data||[], mBreaks=mBreaksRes.data||[];
-    for(const emp of employees){
-      const already=accounts.find(function(a){return a.employee_id===emp.id&&a.year===prevY&&a.month===prevM;});
-      if(already) continue;
-      const monthlyH=Math.round((emp.weekly_hours||0)*52/12*10)/10;
-      const empE=mEntries.filter(function(e){return e.employee_id===emp.id;});
-      const empB=mBreaks.filter(function(b){return b.employee_id===emp.id;});
-      const nettoMins=empE.reduce(function(sum,e){
-        return sum+calcNettoMins(e,empB.filter(function(b){return b.date===e.date;}));
-      },0);
-      const nettoH=Math.round(nettoMins/60*10)/10;
-      const balance=Math.round((nettoH-monthlyH)*10)/10;
-      await sb.from('time_accounts').insert({
-        employee_id:emp.id,year:prevY,month:prevM,
-        hours_target:monthlyH,hours_worked:nettoH,
-        hours_paid_out:monthlyH,balance:balance
-      });
-    }
-    alert('Monatsabschluss abgeschlossen!');
+  window._billFrom=billFrom; window._billTo=billTo;
+  window.refreshBilling=function(){
+    const f=window._billFrom, t=window._billTo;
+    if(f&&t&&f<t) document.getElementById('billing-rows').innerHTML=buildRows(f,t);
+  };
+
+  window.doMonthClose=async function(ds){
+    const empId=ds.eid;
+    const netto=parseFloat(ds.netto);
+    const soll=parseFloat(ds.soll);
+    const bal=parseFloat(ds.bal);
+    const to=ds.to;
+    const d=new Date(to);
+    const year=d.getFullYear(), month=d.getMonth()+1;
+    if(!confirm('Abschluss für '+employees.find(function(e){return e.id===empId;})?.name+' buchen?
+Gearbeitet: '+netto+'h | Auszahlung: '+soll+'h | Neuer Saldo: '+(bal>=0?'+':'')+bal+'h')) return;
+    const {error}=await sb.from('time_accounts').upsert({
+      employee_id:empId,year,month,
+      hours_target:soll,hours_worked:netto,
+      hours_paid_out:soll,balance:bal
+    },{onConflict:'employee_id,year,month'});
+    if(error){alert('Fehler: '+error.message);return;}
+    alert('✅ Abschluss gespeichert!');
     renderTimeAccounts();
   };
 
-  // ── Manual account adjustment ─────────────────────────────────────────────
-  window.openAccountAdjust=function(){
+  window.openAccountAdjust=function(preEmpId){
     document.getElementById('modal-container').innerHTML=
       '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
       +'<div class="modal">'
       +'<div class="modal-title">✏️ Zeitkonto manuell anpassen</div>'
       +'<p style="font-size:13px;color:var(--s500);margin-bottom:16px">'
-      +'Für Überstundenabbau, Auszahlung außer der Reihe oder Korrekturen.'
-      +'</p>'
+      +'Für Überstundenabbau, Auszahlung außer der Reihe oder Korrekturen. '
+      +'Negativ = Konto reduzieren. Positiv = Konto erhöhen.</p>'
       +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
       +'<select class="form-select" id="adj-emp">'
-      +employees.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
+      +employees.map(function(e){return '<option value="'+e.id+'"'+(e.id===preEmpId?' selected':'')+'>'+e.name+'</option>';}).join('')
       +'</select></div>'
       +'<div class="two-col">'
       +'<div class="form-group"><label class="form-label">Datum</label>'
@@ -1962,28 +1999,22 @@ async function renderTimeAccounts(){
       +'</div>'
       +'<div class="form-group"><label class="form-label">Grund</label>'
       +'<input class="form-input" id="adj-reason" placeholder="z.B. Überstunden abgefeiert, Auszahlung 10h…"></div>'
-      +'<p style="font-size:12px;color:var(--s400);margin-bottom:12px">'
-      +'Negativ = Konto wird reduziert (Abbau/Auszahlung). Positiv = Konto wird erhöht.'
-      +'</p>'
       +'<div class="modal-footer">'
       +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
       +'<button class="btn-sm btn-green" onclick="saveAccountAdjust()">Speichern</button>'
       +'</div></div></div>';
-
     window.saveAccountAdjust=async function(){
       const empId=document.getElementById('adj-emp').value;
       const date=document.getElementById('adj-date').value;
       const hours=parseFloat(document.getElementById('adj-hours').value);
       const reason=document.getElementById('adj-reason').value.trim();
       if(!date||isNaN(hours)||!reason){alert('Bitte alle Felder ausfüllen.');return;}
-      await sb.from('account_adjustments').insert({
-        employee_id:empId,date,hours,reason,created_by:currentUser.id
-      });
+      await sb.from('account_adjustments').insert({employee_id:empId,date,hours,reason,created_by:currentUser.id});
       closeModal(); renderTimeAccounts();
     };
   };
 
-  // ── Month close modal ─────────────────────────────────────────────────────
+  // Keep openMonthClose for manual use
   window.openMonthClose=function(){
     const empOptions=employees.map(function(e){
       return '<option value="'+e.id+'" data-monthly="'+Math.round((e.weekly_hours||0)*52/12*10)/10+'">'+e.name+'</option>';
@@ -1991,39 +2022,31 @@ async function renderTimeAccounts(){
     document.getElementById('modal-container').innerHTML=
       '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
       +'<div class="modal">'
-      +'<div class="modal-title">📅 Monatsabschluss</div>'
-      +'<p style="font-size:13px;color:var(--s500);margin-bottom:16px">'
-      +'Monatssoll wird vom Konto abgezogen (= Gehalt ausbezahlt). '
-      +'Differenz zur tatsächlich gearbeiteten Zeit bleibt als Saldo.'
-      +'</p>'
+      +'<div class="modal-title">📅 Manueller Monatsabschluss</div>'
       +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
       +'<select class="form-select" id="mc-emp" onchange="updateMonthlyTarget()">'
       +empOptions+'</select></div>'
       +'<div class="two-col">'
       +'<div class="form-group"><label class="form-label">Jahr</label>'
-      +'<input class="form-input" type="number" id="mc-year" value="'+(curM===1?curY-1:curY)+'"></div>'
+      +'<input class="form-input" type="number" id="mc-year" value="'+curY+'"></div>'
       +'<div class="form-group"><label class="form-label">Monat</label>'
       +'<select class="form-select" id="mc-month">'
-      +MONTHS.map(function(m,i){return '<option value="'+(i+1)+'"'+(i+1===(curM===1?12:curM-1)?' selected':'')+'>'+m+'</option>';}).join('')
+      +MONTHS.map(function(m,i){return '<option value="'+(i+1)+'"'+(i+1===curM?' selected':'')+'>'+m+'</option>';}).join('')
       +'</select></div></div>'
-      +'<div class="form-group"><label class="form-label">Monatssoll / Auszahlung (Stunden)</label>'
+      +'<div class="form-group"><label class="form-label">Netto gearbeitet (h)</label>'
+      +'<input class="form-input" type="number" step="0.25" id="mc-worked" value="0"></div>'
+      +'<div class="form-group"><label class="form-label">Monatssoll / Auszahlung (h)</label>'
       +'<input class="form-input" type="number" step="0.5" id="mc-target" value="0"></div>'
-      +'<div class="form-group"><label class="form-label">Netto gearbeitete Stunden</label>'
-      +'<input class="form-input" type="number" step="0.25" id="mc-worked" value="0">'
-      +'<div style="font-size:11px;color:var(--s400);margin-top:3px">Trage hier die Netto-Stunden (ohne Pausen) ein</div></div>'
       +'<div id="mc-balance-info" style="background:var(--s50);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--s600);margin-bottom:12px"></div>'
       +'<div class="modal-footer">'
       +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
-      +'<button class="btn-sm btn-green" onclick="saveMonthClose()">Abschluss speichern</button>'
+      +'<button class="btn-sm btn-green" onclick="saveMonthClose()">Speichern</button>'
       +'</div></div></div>';
-
     function updateInfo(){
       const w=parseFloat(document.getElementById('mc-worked').value)||0;
       const t=parseFloat(document.getElementById('mc-target').value)||0;
       const diff=Math.round((w-t)*10)/10;
-      document.getElementById('mc-balance-info').innerHTML=
-        'Saldo: <strong style="color:'+(diff>=0?'var(--g600)':'var(--r600)')+'">'+( diff>=0?'+':'')+diff+'h</strong>'
-        +' ('+w+'h gearbeitet – '+t+'h Monatssoll/Auszahlung)';
+      document.getElementById('mc-balance-info').innerHTML='Saldo: <strong style="color:'+(diff>=0?'var(--g600)':'var(--r600)')+'">'+( diff>=0?'+':'')+diff+'h</strong>';
     }
     window.updateMonthlyTarget=function(){
       const sel=document.getElementById('mc-emp');
@@ -2034,7 +2057,6 @@ async function renderTimeAccounts(){
     document.getElementById('mc-worked').addEventListener('input',updateInfo);
     document.getElementById('mc-target').addEventListener('input',updateInfo);
     window.updateMonthlyTarget();
-
     window.saveMonthClose=async function(){
       const empId=document.getElementById('mc-emp').value;
       const year=parseInt(document.getElementById('mc-year').value);
@@ -2043,687 +2065,10 @@ async function renderTimeAccounts(){
       const worked=parseFloat(document.getElementById('mc-worked').value)||0;
       const balance=Math.round((worked-target)*10)/10;
       const {error}=await sb.from('time_accounts').upsert({
-        employee_id:empId,year,month,
-        hours_target:target,hours_worked:worked,
-        hours_paid_out:target,balance
+        employee_id:empId,year,month,hours_target:target,hours_worked:worked,hours_paid_out:target,balance
       },{onConflict:'employee_id,year,month'});
       if(error){alert('Fehler: '+error.message);return;}
       closeModal(); renderTimeAccounts();
     };
   };
 }
-
-// ── EDIT EMPLOYEE (Admin) ─────────────────────────────────────────────────────
-function openEditEmployee(id,name,dept,type,weekly,vacation){
-  document.getElementById('modal-container').innerHTML=`
-    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
-        <div class="modal-title">✏️ Mitarbeiter bearbeiten</div>
-        <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="ee-name" value="${name}"></div>
-        <div class="form-group"><label class="form-label">Abteilung</label>
-          <select class="form-select" id="ee-dept">
-            ${['Produktion','Abfüllung','Lager','Qualitätssicherung','Verwaltung'].map(d=>`<option${d===dept?' selected':''}>${d}</option>`).join('')}
-          </select></div>
-        ${currentProfile.role==='admin'?`<div class="form-group"><label class="form-label">Mitarbeiter-Typ</label>
-          <select class="form-select" id="ee-type" onchange="toggleWeeklyHours()">
-            <option value="minijob"${type==='minijob'?' selected':''}>Minijob (Stundenlohn)</option>
-            <option value="account"${type==='account'?' selected':''}>Festanstellung (Arbeitszeitkonto)</option>
-          </select></div>`:'<input type="hidden" id="ee-type" value="'+type+'">'}
-        <div id="ee-weekly-wrap" style="display:${type==='account'?'block':'none'}">
-          <div class="form-group"><label class="form-label">Wochenstunden</label><input class="form-input" type="number" step="0.5" id="ee-weekly" value="${weekly}" placeholder="z.B. 40"></div>
-          <div style="font-size:12px;color:var(--s400);margin-top:-8px;margin-bottom:12px">Monatssoll: <strong id="ee-monthly-calc">${Math.round(weekly*52/12*10)/10}h</strong></div>
-        </div>
-        <div class="form-group"><label class="form-label">Jahresurlaubstage</label><input class="form-input" type="number" id="ee-vacation" value="${vacation}" placeholder="z.B. 24"></div>
-        <div class="modal-footer">
-          <button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>
-          <button class="btn-sm btn-green" onclick="saveEmployee('${id}')">Speichern</button>
-        </div>
-      </div></div>`;
-  window.toggleWeeklyHours=()=>{
-    const t=document.getElementById('ee-type').value;
-    document.getElementById('ee-weekly-wrap').style.display=t==='account'?'block':'none';
-  };
-  document.getElementById('ee-weekly').addEventListener('input',()=>{
-    const w=parseFloat(document.getElementById('ee-weekly').value)||0;
-    document.getElementById('ee-monthly-calc').textContent=Math.round(w*52/12*10)/10+'h';
-  });
-  window.saveEmployee=async(empId)=>{
-    const name=document.getElementById('ee-name').value;
-    const dept=document.getElementById('ee-dept').value;
-    const type=document.getElementById('ee-type').value;
-    const weekly=parseFloat(document.getElementById('ee-weekly').value)||0;
-    const vacation=parseInt(document.getElementById('ee-vacation').value)||0;
-    await sb.from('profiles').update({name,department:dept,employee_type:type,weekly_hours:weekly,vacation_days_per_year:vacation}).eq('id',empId);
-    closeModal(); renderUsers();
-  };
-}
-
-
-// ── EXCEL EXPORT ─────────────────────────────────────────────────────────────
-function openExportModal(){
-  const now=new Date();
-  const firstOfMonth=`${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;
-  const lastOfMonth=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(getDaysInMonth(now.getFullYear(),now.getMonth()))}`;
-  document.getElementById('modal-container').innerHTML=`
-    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
-        <div class="modal-title">📥 Excel-Export</div>
-        <div class="two-col">
-          <div class="form-group"><label class="form-label">Von</label><input class="form-input" type="date" id="ex-from" value="${firstOfMonth}"></div>
-          <div class="form-group"><label class="form-label">Bis</label><input class="form-input" type="date" id="ex-to" value="${lastOfMonth}"></div>
-        </div>
-        <div class="form-group"><label class="form-label">Inhalt</label>
-          <select class="form-select" id="ex-type">
-            <option value="hours">Arbeitsstunden (alle MA)</option>
-            <option value="accounts">Arbeitszeitkonten</option>
-            <option value="both">Beides kombiniert</option>
-          </select>
-        </div>
-        <div class="modal-footer">
-          <button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>
-          <button class="btn-sm btn-green" onclick="runExport()">📥 Exportieren</button>
-        </div>
-      </div></div>`;
-
-  window.runExport=async()=>{
-    const from=document.getElementById('ex-from').value;
-    const to=document.getElementById('ex-to').value;
-    const type=document.getElementById('ex-type').value;
-    if(!from||!to){ alert('Bitte Zeitraum wählen.'); return; }
-
-    const [empRes,entriesRes,accountsRes,breakRes]=await Promise.all([
-      sb.from('profiles').select('*').eq('role','employee'),
-      sb.from('time_entries').select('*').gte('date',from).lte('date',to),
-      sb.from('time_accounts').select('*'),
-      sb.from('break_entries').select('*').gte('date',from).lte('date',to)
-    ]);
-    const employees=empRes.data||[];
-    const entries=entriesRes.data||[];
-    const accounts=accountsRes.data||[];
-    const allExportBreaks=breakRes.data||[];
-
-    // Build CSV
-    const rows=[];
-    const fromLabel=new Date(from).toLocaleDateString('de-DE');
-    const toLabel=new Date(to).toLocaleDateString('de-DE');
-
-    rows.push(['RoFru-Arbeitszeitplaner – Export','','','','','']);
-    rows.push([`Zeitraum: ${fromLabel} – ${toLabel}`,'','','','','']);
-    rows.push(['']);
-
-    if(type==='hours'||type==='both'){
-      rows.push(['ARBEITSSTUNDEN','','','','','','','']);
-      rows.push(['Name','Abteilung','Typ','Buchungen','Brutto-Stunden','Pause-Minuten','Netto-Stunden','']);
-      employees.forEach(emp=>{
-        const ee=entries.filter(e=>e.employee_id===emp.id);
-        const bb=allExportBreaks.filter(b=>b.employee_id===emp.id&&b.pause_end);
-        const brutto=ee.reduce((a,e)=>a+(e.duration_minutes||0),0);
-        const pauseMins=bb.reduce((a,b)=>a+(b.duration_minutes||0),0);
-        const netto=ee.reduce(function(sum,e){
-          return sum+calcNettoMins(e,allExportBreaks.filter(function(b){return b.employee_id===emp.id&&b.date===e.date;}));
-        },0);
-        rows.push([emp.name,emp.department||'',emp.employee_type==='account'?'Festanstellung':'Minijob',
-          ee.length,Math.round(brutto/60*100)/100,pauseMins,Math.round(netto/60*100)/100,'']);
-      });
-      rows.push(['']);
-      rows.push(['EINZELBUCHUNGEN','','','','','','','']);
-      rows.push(['Name','Datum','Beginn','Ende','Brutto (min)','Pause (min)','Netto (min)','Notiz']);
-      const sorted=[...entries].sort((a,b)=>a.date.localeCompare(b.date));
-      sorted.forEach(e=>{
-        const emp=employees.find(x=>x.id===e.employee_id);
-        const bb=allExportBreaks.filter(b=>b.employee_id===e.employee_id&&b.date===e.date&&b.pause_end);
-        const pauseMins=bb.reduce((a,b)=>a+(b.duration_minutes||0),0);
-        const netto=calcNettoMins(e,allExportBreaks.filter(function(b){return b.employee_id===e.employee_id&&b.date===e.date;}));
-        rows.push([emp?.name||'?',new Date(e.date).toLocaleDateString('de-DE'),
-          e.clock_in?.slice(0,5)||'',e.clock_out?.slice(0,5)||'',
-          e.duration_minutes||0,pauseMins,netto,e.note||'']);
-      });
-      rows.push(['']);
-    }
-
-    if(type==='accounts'||type==='both'){
-      rows.push(['ARBEITSZEITKONTEN','','','','','']);
-      rows.push(['Name','Monat','Soll (h)','Gearbeitet (h)','Ausgezahlt (h)','Saldo (h)']);
-      const accEmps=employees.filter(e=>e.employee_type==='account');
-      accEmps.forEach(emp=>{
-        const empAcc=accounts.filter(a=>a.employee_id===emp.id).sort((a,b)=>a.year-b.year||a.month-b.month);
-        if(empAcc.length===0){
-          rows.push([emp.name,'Kein Abschluss vorhanden','','','','']);
-        } else {
-          empAcc.forEach(a=>{
-            rows.push([emp.name,`${MONTHS[a.month-1]} ${a.year}`,a.hours_target,Math.round(a.hours_worked*100)/100,a.hours_paid_out,Math.round(a.balance*100)/100]);
-          });
-          const latest=empAcc[empAcc.length-1];
-          rows.push(['','→ Aktueller Kontostand','','','',Math.round(latest.balance*100)/100]);
-        }
-        rows.push(['']);
-      });
-    }
-
-    // Convert to CSV with BOM for Excel German encoding
-    const csv='\uFEFF'+rows.map(r=>r.map(c=>{
-      const s=String(c).replace(/"/g,'""');
-      return s.includes(',')||s.includes('"')||s.includes('\n')?`"${s}"`:s;
-    }).join(';')).join('\n');
-
-    const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download=`RoFru_Export_${from}_${to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    closeModal();
-  };
-}
-
-
-// ── QR STEMPEL HANDLER (runs on page load if ?stamp=1) ───────────────────────
-async function handleQRStamp(){
-  const params=new URLSearchParams(window.location.search);
-  if(!params.has('stamp')) return;
-  // Remove param from URL without reload
-  window.history.replaceState({},'',window.location.pathname);
-  if(!currentUser||!currentProfile||currentProfile.role!=='employee') return;
-  // Check if already clocked in today (open entry without clock_out)
-  const {data:open}=await sb.from('time_entries').select('*')
-    .eq('employee_id',currentUser.id).eq('date',todayStr).is('clock_out',null).single();
-  if(open){
-    // Clock OUT – first close any open breaks
-    const now=new Date();
-    const clockOut=pad(now.getHours())+':'+pad(now.getMinutes());
-    // Close open break if exists
-    const {data:openBreak}=await sb.from('break_entries').select('*')
-      .eq('employee_id',currentUser.id).eq('date',todayStr).is('pause_end',null).maybeSingle();
-    if(openBreak){
-      const bDur=Math.round((now-new Date(todayStr+'T'+openBreak.pause_start))/60000);
-      await sb.from('break_entries').update({pause_end:clockOut,duration_minutes:Math.max(1,bDur)}).eq('id',openBreak.id);
-    }
-    // Calculate duration = clock_in to now (gross), breaks will be subtracted for netto display
-    const dur=Math.round((now-new Date(todayStr+'T'+open.clock_in))/60000);
-    await sb.from('time_entries').update({clock_out:clockOut,duration_minutes:dur}).eq('id',open.id);
-    showStampFeedback('ausgestempelt','Du hast dich um '+clockOut+' Uhr ausgestempelt. Schönen Feierabend! 👋',false);
-  } else {
-    // Clock IN
-    const now=new Date();
-    const clockIn=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
-    await sb.from('time_entries').insert({employee_id:currentUser.id,date:todayStr,clock_in:clockIn,note:'QR-Stempel'});
-    showStampFeedback('eingestempelt','Du hast dich um '+clockIn+' Uhr eingestempelt. Viel Spaß bei der Arbeit! 💪',true);
-  }
-}
-
-function showStampFeedback(action,msg,isIn){
-  document.getElementById('page-content').innerHTML=`
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;text-align:center;padding:24px">
-      <div style="font-size:80px;margin-bottom:16px">${isIn?'✅':'👋'}</div>
-      <div style="font-size:24px;font-weight:700;color:${isIn?'var(--g700)':'var(--s700)'};margin-bottom:8px">Erfolgreich ${action}!</div>
-      <div style="font-size:15px;color:var(--s500);max-width:300px;line-height:1.5">${msg}</div>
-      <button class="btn-sm btn-green" style="margin-top:24px" onclick="navigateTo('dashboard')">Zur Übersicht</button>
-    </div>`;
-  navigateTo('dashboard');
-  // override with feedback for 3 secs
-  setTimeout(()=>{
-    document.getElementById('page-content').innerHTML=`
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;text-align:center;padding:24px">
-        <div style="font-size:80px;margin-bottom:16px">${isIn?'✅':'👋'}</div>
-        <div style="font-size:24px;font-weight:700;color:${isIn?'var(--g700)':'var(--s700)'};margin-bottom:8px">Erfolgreich ${action}!</div>
-        <div style="font-size:15px;color:var(--s500);max-width:300px;line-height:1.5">${msg}</div>
-        <button class="btn-sm btn-green" style="margin-top:24px" onclick="navigateTo('dashboard')">Zur Übersicht</button>
-      </div>`;
-  },100);
-}
-
-// ── QR ADMIN PAGE ─────────────────────────────────────────────────────────────
-async function renderQRAdmin(){
-  const stampURL=window.location.origin+window.location.pathname+'?stamp=1';
-  // Use QR Server API to generate QR code
-  const qrURL=`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(stampURL)}`;
-  document.getElementById('page-content').innerHTML=`
-    <div class="page-header">
-      <div class="page-title">📲 QR-Stempel</div>
-      <div class="page-sub">Zum Ein- und Ausstempeln vor Ort aufhängen</div>
-    </div>
-    <div class="card" style="text-align:center;max-width:480px;margin:0 auto">
-      <div style="font-size:14px;font-weight:600;color:var(--s700);margin-bottom:16px">QR-Code zum Stempeln</div>
-      <img src="${qrURL}" style="width:260px;height:260px;border-radius:12px;border:3px solid var(--g200)" alt="QR Code">
-      <div style="margin-top:16px;font-size:13px;color:var(--s500);line-height:1.6">
-        Mitarbeiter scannen diesen Code mit dem Smartphone.<br>
-        Beim ersten Scan: <strong style="color:var(--g700)">Einstempeln</strong><br>
-        Beim zweiten Scan: <strong style="color:var(--r600)">Ausstempeln</strong>
-      </div>
-      <div style="margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-        <button class="btn-sm btn-green" onclick="window.open('${qrURL}','_blank')">🖨️ QR-Code drucken</button>
-        <button class="btn-sm btn-outline" onclick="navigator.clipboard.writeText('${stampURL}').then(()=>alert('Link kopiert!'))">🔗 Link kopieren</button>
-      </div>
-    </div>
-    <div class="card" style="max-width:480px;margin:16px auto 0">
-      <div class="card-title">ℹ️ So funktioniert es</div>
-      <div style="font-size:13px;color:var(--s600);line-height:1.8">
-        <div>1. QR-Code ausdrucken und am Eingang aufhängen</div>
-        <div>2. Mitarbeiter öffnen die App auf dem Smartphone</div>
-        <div>3. QR-Code scannen → automatisch ein- oder ausstempeln</div>
-        <div>4. Erster Scan = Einstempeln, zweiter Scan = Ausstempeln</div>
-      </div>
-    </div>
-    <div style="background:var(--s50);border-radius:12px;padding:14px;max-width:480px;margin:0 auto;font-size:12px;color:var(--s500)">
-      <strong>Stempel-URL:</strong> <span style="font-family:var(--mono);word-break:break-all">${stampURL}</span>
-    </div>`;
-}
-
-// ── SETTINGS PAGE (Employee) ──────────────────────────────────────────────────
-async function renderSettings(){
-  document.getElementById('page-content').innerHTML=`
-    <div class="page-header">
-      <div class="page-title">⚙️ Einstellungen</div>
-      <div class="page-sub">Konto & Passwort verwalten</div>
-    </div>
-    <div class="card">
-      <div class="card-title">🔒 Passwort ändern</div>
-      <div id="pw-msg"></div>
-      <div class="form-group"><label class="form-label">Neues Passwort</label>
-        <input class="form-input" type="password" id="pw-new" placeholder="Mindestens 6 Zeichen"></div>
-      <div class="form-group"><label class="form-label">Passwort bestätigen</label>
-        <input class="form-input" type="password" id="pw-confirm" placeholder="Passwort wiederholen"></div>
-      <button class="btn-sm btn-green" onclick="changePassword()">Passwort speichern</button>
-    </div>
-    <div class="card">
-      <div class="card-title">👤 Mein Profil</div>
-      <div style="font-size:13px;color:var(--s600);line-height:1.8">
-        <div><strong>Name:</strong> ${currentProfile.name}</div>
-        <div><strong>E-Mail:</strong> ${currentUser.email}</div>
-        <div><strong>Abteilung:</strong> ${currentProfile.department||'—'}</div>
-        <div><strong>Typ:</strong> ${currentProfile.employee_type==='account'?'Festanstellung':'Minijob'}</div>
-      </div>
-    </div>`;
-
-  window.changePassword=async()=>{
-    const pw=document.getElementById('pw-new').value;
-    const pw2=document.getElementById('pw-confirm').value;
-    const msg=document.getElementById('pw-msg');
-    msg.innerHTML='';
-    if(pw.length<6){ msg.innerHTML='<div class="error-box">Passwort muss mindestens 6 Zeichen lang sein.</div>'; return; }
-    if(pw!==pw2){ msg.innerHTML='<div class="error-box">Passwörter stimmen nicht überein.</div>'; return; }
-    const {error}=await sb.auth.updateUser({password:pw});
-    if(error){ msg.innerHTML=`<div class="error-box">${error.message}</div>`; return; }
-    msg.innerHTML='<div class="success-box">✅ Passwort erfolgreich geändert!</div>';
-    document.getElementById('pw-new').value='';
-    document.getElementById('pw-confirm').value='';
-  };
-}
-
-
-// ── EDIT TIMES (Admin/Planner) ────────────────────────────────────────────────
-async function renderEditTimes(){
-  const {data:empData}=await sb.from('profiles').select('*').eq('role','employee');
-  const employees=empData||[];
-  // Use global window vars so onchange handlers can access them
-  window._etEmp=employees[0]?.id||'';
-  window._etDate=todayStr;
-
-  async function loadEntries(){
-    const empId=window._etEmp;
-    const date=window._etDate;
-    if(!empId||!date){
-      document.getElementById('et-entries').innerHTML='<p style="color:var(--s400);font-size:13px">Mitarbeiter und Datum wählen…</p>';
-      return;
-    }
-    document.getElementById('et-entries').innerHTML='<p style="color:var(--s400);font-size:13px">Lade…</p>';
-    const {data,error}=await sb.from('time_entries').select('*').eq('employee_id',empId).eq('date',date).order('clock_in');
-    if(error){ document.getElementById('et-entries').innerHTML='<p style="color:var(--r600);font-size:13px">Fehler: '+error.message+'</p>'; return; }
-    const entries=data||[];
-    function inp(id,field,val,type,w){
-      var el='<input data-id="'+id+'" data-field="'+field+'"'
-        +' style="width:'+w+'px;padding:4px 6px;border:1px solid var(--s200);border-radius:6px;font-family:var(--mono);font-size:13px"'
-        +' type="'+type+'" value="'+(val!=null?val:'')+'"'
-        +' onchange="window.updateEntry(this.dataset.id,this.dataset.field,this.value)">';
-      return el;
-    }
-    document.getElementById('et-entries').innerHTML=entries.length===0
-      ?'<p style="color:var(--s400);font-size:13px">Keine Buchungen für diesen Tag.</p>'
-      :'<table><thead><tr><th>Beginn</th><th>Ende</th><th>Dauer (min)</th><th>Notiz</th><th></th></tr></thead><tbody>'
-      +entries.map(function(e){
-        return '<tr>'
-          +'<td>'+inp(e.id,'clock_in',e.clock_in,'time',85)+'</td>'
-          +'<td>'+inp(e.id,'clock_out',e.clock_out,'time',85)+'</td>'
-          +'<td>'+inp(e.id,'duration_minutes',e.duration_minutes,'number',70)+'</td>'
-          +'<td><input data-id="'+e.id+'" data-field="note" style="width:160px;padding:4px 6px;border:1px solid var(--s200);border-radius:6px;font-size:13px" value="'+(e.note||'')+'" onchange="window.updateEntry(this.dataset.id,this.dataset.field,this.value)"></td>'
-          +'<td><button class="btn-sm btn-red" data-eid="'+e.id+'" style="font-size:11px;padding:4px 8px" onclick="window.deleteEntry(this.dataset.eid)">✕</button></td>'
-          +'</tr>';
-      }).join('')
-      +'</tbody></table>';
-  }
-
-  document.getElementById('page-content').innerHTML=
-    '<div class="page-header">'
-    +'<div class="page-title">✏️ Zeiten korrigieren</div>'
-    +'<div class="page-sub">Buchungen manuell bearbeiten oder ergänzen</div>'
-    +'</div>'
-    +'<div class="card">'
-    +'<div class="two-col" style="margin-bottom:16px">'
-    +'<div class="form-group" style="margin:0"><label class="form-label">Mitarbeiter</label>'
-    +'<select class="form-select" id="et-emp" onchange="window._etEmp=this.value;window.loadEntries()">'
-    +employees.map(function(e){return '<option value="'+e.id+'">'+(e.name)+'</option>';}).join('')
-    +'</select></div>'
-    +'<div class="form-group" style="margin:0"><label class="form-label">Datum</label>'
-    +'<input class="form-input" type="date" id="et-date" value="'+todayStr+'" onchange="window._etDate=this.value;window.loadEntries()">'
-    +'</div></div>'
-    +'<div id="et-entries"></div>'
-    +'<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--s100)">'
-    +'<div style="font-size:13px;font-weight:600;color:var(--s600);margin-bottom:10px">➕ Neue Buchung eintragen</div>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'
-    +'<div><label class="form-label">Beginn</label><input class="form-input" type="time" id="et-new-in" style="width:120px"></div>'
-    +'<div><label class="form-label">Ende</label><input class="form-input" type="time" id="et-new-out" style="width:120px"></div>'
-    +'<div><label class="form-label">Notiz</label><input class="form-input" id="et-new-note" placeholder="Optional" style="width:160px"></div>'
-    +'<button class="btn-sm btn-green" onclick="window.addEntry()">+ Eintragen</button>'
-    +'</div></div></div>';
-
-  window.loadEntries=loadEntries;
-  window.updateEntry=async function(id,field,val){
-    const upd={};
-    if(field==='duration_minutes') upd[field]=parseInt(val)||0;
-    else upd[field]=val||null;
-    const {error}=await sb.from('time_entries').update(upd).eq('id',id);
-    if(error) alert('Fehler beim Speichern: '+error.message);
-  };
-  window.deleteEntry=async function(id){
-    if(!confirm('Buchung wirklich löschen?')) return;
-    await sb.from('time_entries').delete().eq('id',id);
-    loadEntries();
-  };
-  window.addEntry=async function(){
-    const ci=document.getElementById('et-new-in').value;
-    const co=document.getElementById('et-new-out').value;
-    const note=document.getElementById('et-new-note').value;
-    const date=document.getElementById('et-date').value;
-    const emp=document.getElementById('et-emp').value;
-    if(!ci||!emp||!date){alert('Bitte Mitarbeiter, Datum und Beginn angeben.');return;}
-    let dur=0;
-    if(co){const a=ci.split(':').map(Number),b=co.split(':').map(Number);dur=(b[0]*60+b[1])-(a[0]*60+a[1]);}
-    const {error}=await sb.from('time_entries').insert({employee_id:emp,date,clock_in:ci,clock_out:co||null,duration_minutes:dur,note:note||''});
-    if(error){alert('Fehler: '+error.message);return;}
-    document.getElementById('et-new-in').value='';
-    document.getElementById('et-new-out').value='';
-    document.getElementById('et-new-note').value='';
-    loadEntries();
-  };
-  loadEntries();
-}
-
-// ── RECURRING SHIFTS (Admin/Planner) ─────────────────────────────────────────
-async function renderRecurringShifts(){
-  const [empRes,recRes]=await Promise.all([
-    sb.from('profiles').select('*').eq('role','employee'),
-    sb.from('recurring_shifts').select('*')
-  ]);
-  const employees=empRes.data||[], recurring=recRes.data||[];
-  const DOW=['','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag','Sonntag'];
-  const empMap={}; employees.forEach(e=>empMap[e.id]=e);
-
-  document.getElementById('page-content').innerHTML=`
-    <div class="page-header">
-      <div class="page-header-row">
-        <div><div class="page-title">🔁 Feste Arbeitszeiten</div>
-        <div class="page-sub">Wiederkehrende Schichten pro Mitarbeiter</div></div>
-        <button class="btn-sm btn-green" onclick="openAddRecurring(${JSON.stringify(employees).replace(/"/g,'&quot;')})">+ Neue Regelzeit</button>
-      </div>
-    </div>
-    ${employees.map(emp=>{
-      const empRec=recurring.filter(r=>r.employee_id===emp.id&&r.active).sort((a,b)=>a.day_of_week-b.day_of_week);
-      if(!empRec.length) return '';
-      return `<div class="card">
-        <div class="card-title">👤 ${emp.name} <span class="text-sm">${emp.department||''}</span></div>
-        <table><thead><tr><th>Wochentag</th><th>Beginn</th><th>Ende</th><th>Dauer</th><th></th></tr></thead><tbody>
-        ${empRec.map(r=>`<tr>
-          <td><strong>${DOW[r.day_of_week]}</strong></td>
-          <td class="text-mono">${r.start_time?.slice(0,5)}</td>
-          <td class="text-mono">${r.end_time?.slice(0,5)}</td>
-          <td class="text-mono">${(()=>{const [h1,m1]=r.start_time.split(':').map(Number);const [h2,m2]=r.end_time.split(':').map(Number);const d=(h2*60+m2)-(h1*60+m1);return fmtMins(d);})()}</td>
-          <td><button class="btn-sm btn-red" style="font-size:11px;padding:4px 8px" onclick="deleteRecurring(${r.id})">✕</button></td>
-        </tr>`).join('')}</tbody></table>
-      </div>`;
-    }).join('') || '<div class="card"><p style="color:var(--s400);font-size:13px">Noch keine festen Arbeitszeiten definiert.</p></div>'}
-    <div class="card" style="background:var(--a50);border-color:var(--a400)">
-      <div style="font-size:13px;color:#92400e">
-        ℹ️ Feste Arbeitszeiten erscheinen automatisch im Dienstplan und im MA-Kalender.
-        Klicke auf <strong>„+ Regelzeit in Dienstplan übernehmen"</strong> im Dienstplan um sie für einen bestimmten Monat einzutragen.
-      </div>
-    </div>`;
-
-  window.deleteRecurring=async(id)=>{
-    await sb.from('recurring_shifts').update({active:false}).eq('id',id);
-    renderRecurringShifts();
-  };
-  window.openAddRecurring=(emps)=>{
-    const days=[{v:1,l:'Mo'},{v:2,l:'Di'},{v:3,l:'Mi'},{v:4,l:'Do'},{v:5,l:'Fr'},{v:6,l:'Sa'},{v:7,l:'So'}];
-    document.getElementById('modal-container').innerHTML=`
-      <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-        <div class="modal">
-          <div class="modal-title">🔁 Neue feste Arbeitszeit</div>
-          <div class="form-group">
-            <label class="form-label">Mitarbeiter</label>
-            <select class="form-select" id="rec-emp">${emps.map(e=>`<option value="${e.id}">${e.name}</option>`).join('')}</select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Wochentage (mehrere auswählbar)</label>
-            <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:6px">
-              ${days.map(d=>`
-                <div id="day-btn-${d.v}" onclick="toggleDayBtn(${d.v})"
-                  style="padding:10px 4px;border-radius:10px;border:1.5px solid var(--s200);text-align:center;cursor:pointer;transition:.15s;user-select:none">
-                  <div style="font-size:12px;font-weight:600;color:var(--s600)">${d.l}</div>
-                  <div style="font-size:16px;margin-top:4px">○</div>
-                </div>`).join('')}
-            </div>
-          </div>
-          <div class="two-col">
-            <div class="form-group"><label class="form-label">Beginn</label><input class="form-input" type="time" id="rec-start" value="08:00"></div>
-            <div class="form-group"><label class="form-label">Ende</label><input class="form-input" type="time" id="rec-end" value="16:00"></div>
-          </div>
-          <div id="rec-preview" style="font-size:12px;color:var(--s500);min-height:18px;margin-bottom:4px"></div>
-          <div class="modal-footer">
-            <button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>
-            <button class="btn-sm btn-green" onclick="saveRecurring()">Speichern</button>
-          </div>
-        </div></div>`;
-
-    let selectedDays=new Set();
-    window.toggleDayBtn=(v)=>{
-      const el=document.getElementById('day-btn-'+v);
-      if(selectedDays.has(v)){
-        selectedDays.delete(v);
-        el.style.borderColor='var(--s200)';
-        el.style.background='white';
-        el.querySelector('div:last-child').textContent='○';
-        el.querySelector('div:first-child').style.color='var(--s600)';
-      } else {
-        selectedDays.add(v);
-        el.style.borderColor='var(--g500)';
-        el.style.background='var(--g50)';
-        el.querySelector('div:last-child').textContent='✅';
-        el.querySelector('div:first-child').style.color='var(--g700)';
-      }
-      const dayNames=['','Mo','Di','Mi','Do','Fr','Sa','So'];
-      const preview=document.getElementById('rec-preview');
-      if(preview) preview.textContent=selectedDays.size?'Gewählt: '+[...selectedDays].sort().map(d=>dayNames[d]).join(', '):'';
-    };
-
-    window.saveRecurring=async()=>{
-      const emp=document.getElementById('rec-emp').value;
-      const start=document.getElementById('rec-start').value;
-      const end=document.getElementById('rec-end').value;
-      if(!emp||!start||!end){ alert('Bitte alle Felder ausfüllen.'); return; }
-      if(selectedDays.size===0){ alert('Bitte mindestens einen Wochentag auswählen.'); return; }
-      const rows=[...selectedDays].map(dow=>({employee_id:emp,day_of_week:dow,start_time:start,end_time:end,active:true}));
-      const {error}=await sb.from('recurring_shifts').insert(rows);
-      if(error){ alert('Fehler beim Speichern: '+error.message); return; }
-      closeModal(); renderRecurringShifts();
-    };
-  };
-}
-
-
-// ── APPLY RECURRING SHIFTS ───────────────────────────────────────────────────
-async function applyRecurring(yr, mo){
-  const {data:recShifts}=await sb.from('recurring_shifts').select('*').eq('active',true);
-  if(!recShifts||!recShifts.length){
-    alert('Keine Regelzeiten definiert. Bitte zuerst unter 🔁 Regelzeiten anlegen.');
-    return;
-  }
-  const year=parseInt(yr), month=parseInt(mo);
-  const dim=getDaysInMonth(year,month-1);
-  let count=0;
-  for(let d=1;d<=dim;d++){
-    const date=`${year}-${pad(month)}-${pad(d)}`;
-    const dow=new Date(date).getDay()||7; // JS: 0=So → 7, 1=Mo..6=Sa
-    const dayRec=recShifts.filter(r=>r.day_of_week===dow);
-    for(const r of dayRec){
-      const {data:existing}=await sb.from('shifts').select('id')
-        .eq('employee_id',r.employee_id).eq('date',date).maybeSingle();
-      if(!existing){
-        await sb.from('shifts').insert({
-          employee_id:r.employee_id, date,
-          start_time:r.start_time, end_time:r.end_time,
-          shift_type:'Regelzeit', note:''
-        });
-        count++;
-      }
-    }
-  }
-  alert(`✅ ${count} Schichten aus Regelzeiten für ${MONTHS[month-1]} ${year} eingetragen.`);
-  navigateTo('shifts');
-}
-
-// ── SAFE NETTO CALC ──────────────────────────────────────────────────────────
-// Calculates netto minutes: brutto minus breaks, but breaks are capped at time
-// within the clock_in/clock_out window to prevent negative netto time
-function calcNettoMins(entry, breaks){
-  const bruttoMins = entry.duration_minutes||0;
-  if(!breaks||breaks.length===0) return bruttoMins;
-  // Only count breaks that overlap with the entry's time window
-  let totalBreak=0;
-  breaks.filter(function(b){return b.pause_end;}).forEach(function(b){
-    if(!entry.clock_in) return;
-    // Break must start after clock_in
-    if(b.pause_start < entry.clock_in) return;
-    // If clock_out exists, break must start before clock_out
-    if(entry.clock_out && b.pause_start >= entry.clock_out) return;
-    totalBreak += (b.duration_minutes||0);
-  });
-  // Netto can never be less than 0 or more than brutto
-  return Math.max(0, Math.min(bruttoMins, bruttoMins-totalBreak));
-}
-
-// ── BAVARIAN HOLIDAYS ────────────────────────────────────────────────────────
-function getBavarianHolidays(year){
-  // Easter calculation (Anonymous Gregorian algorithm)
-  const a=year%19, b=Math.floor(year/100), c=year%100;
-  const d=Math.floor(b/4), e=b%4, f=Math.floor((b+8)/25);
-  const g=Math.floor((b-f+1)/3), h=(19*a+b-d-g+15)%30;
-  const i=Math.floor(c/4), k=c%4, l=(32+2*e+2*i-h-k)%7;
-  const m=Math.floor((a+11*h+22*l)/451);
-  const month=Math.floor((h+l-7*m+114)/31);
-  const day=((h+l-7*m+114)%31)+1;
-  const easter=new Date(year,month-1,day);
-  const easterStr=(d)=>{const dt=new Date(easter);dt.setDate(dt.getDate()+d);return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;};
-  const fixed=(m,d)=>`${year}-${pad(m)}-${pad(d)}`;
-  return {
-    [fixed(1,1)]:  'Neujahr',
-    [fixed(1,6)]:  'Heilige Drei Könige',
-    [easterStr(-2)]: 'Karfreitag',
-    [easterStr(0)]:  'Ostersonntag',
-    [easterStr(1)]:  'Ostermontag',
-    [fixed(5,1)]:  'Tag der Arbeit',
-    [easterStr(39)]: 'Christi Himmelfahrt',
-    [easterStr(49)]: 'Pfingstsonntag',
-    [easterStr(50)]: 'Pfingstmontag',
-    [easterStr(60)]: 'Fronleichnam',
-    [fixed(8,15)]: 'Mariä Himmelfahrt',
-    [fixed(10,3)]: 'Tag der Deutschen Einheit',
-    [fixed(11,1)]: 'Allerheiligen',
-    [fixed(12,24)]: 'Heiligabend',
-    [fixed(12,25)]: '1. Weihnachtstag',
-    [fixed(12,26)]: '2. Weihnachtstag',
-    [fixed(12,31)]: 'Silvester',
-  };
-}
-
-
-// ── START BALANCE ─────────────────────────────────────────────────────────────
-async function openStartBalance(){
-  const {data:emps}=await sb.from('profiles').select('*').eq('employee_type','account');
-  const employees=emps||[];
-  const now=new Date();
-  // Build date options: last 12 months + next 2
-  const dateOpts=[];
-  for(let i=-12;i<=2;i++){
-    const d=new Date(now.getFullYear(),now.getMonth()+i,1);
-    dateOpts.push({year:d.getFullYear(),month:d.getMonth()+1,label:MONTHS[d.getMonth()]+' '+d.getFullYear()});
-  }
-  const curIdx=12; // current month index
-
-  document.getElementById('modal-container').innerHTML=
-    '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal">'
-    +'<div class="modal-title">⚡ Startsaldo eintragen</div>'
-    +'<p style="font-size:13px;color:var(--s500);margin-bottom:16px">'
-    +'Trage den Kontostand eines Mitarbeiters zu einem bestimmten Datum ein. '
-    +'Ideal für die Ersteinrichtung oder Korrekturen.'
-    +'</p>'
-    +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
-    +'<select class="form-select" id="sb-emp">'
-    +employees.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
-    +'</select></div>'
-    +'<div class="two-col">'
-    +'<div class="form-group"><label class="form-label">Monat</label>'
-    +'<select class="form-select" id="sb-period">'
-    +dateOpts.map(function(d,i){return '<option value="'+d.year+'-'+d.month+'"'+(i===curIdx?' selected':'')+'>'+d.label+'</option>';}).join('')
-    +'</select></div>'
-    +'<div class="form-group"><label class="form-label">Stichtag (optional)</label>'
-    +'<input class="form-input" type="date" id="sb-day" value="'+todayStr+'" title="Konkretes Datum wenn bekannt"></div>'
-    +'</div>'
-    +'<div class="form-group"><label class="form-label">Startsaldo (Stunden)</label>'
-    +'<input class="form-input" type="number" step="0.25" id="sb-balance" value="0" placeholder="z.B. 5.5 oder -2.25">'
-    +'<div style="font-size:11px;color:var(--s400);margin-top:4px">Positiv = Überstunden · Negativ = Minusstunden</div>'
-    +'</div>'
-    +'<div class="form-group"><label class="form-label">Gearbeitete Stunden im Monat (optional)</label>'
-    +'<input class="form-input" type="number" step="0.25" id="sb-worked" value="0" placeholder="0 = nur Saldo übernehmen">'
-    +'<div style="font-size:11px;color:var(--s400);margin-top:4px">Kann leer bleiben – wird für die Monatsübersicht verwendet</div>'
-    +'</div>'
-    +'<div class="modal-footer">'
-    +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
-    +'<button class="btn-sm btn-green" onclick="saveStartBalance()">Speichern</button>'
-    +'</div>'
-    +'</div></div>';
-
-  window.saveStartBalance=async function(){
-    const empId=document.getElementById('sb-emp').value;
-    const period=document.getElementById('sb-period').value.split('-');
-    const year=parseInt(period[0]);
-    const month=parseInt(period[1]);
-    const balance=parseFloat(document.getElementById('sb-balance').value)||0;
-    const worked=parseFloat(document.getElementById('sb-worked').value)||0;
-    const emp=employees.find(function(e){return e.id===empId;});
-    const monthlyH=emp?Math.round(emp.weekly_hours*52/12*10)/10:0;
-    const hoursWorked=worked>0?worked:monthlyH+balance;
-    const {error}=await sb.from('time_accounts').upsert({
-      employee_id:empId,
-      year:year,
-      month:month,
-      hours_target:monthlyH,
-      hours_worked:hoursWorked,
-      hours_paid_out:0,
-      balance:balance
-    },{onConflict:'employee_id,year,month'});
-    if(error){alert('Fehler: '+error.message);return;}
-    closeModal();
-    renderTimeAccounts();
-  };
-}
-
-// ── HELPERS ──────────────────────────────────────────────────────────────────
-function closeModal(){ document.getElementById('modal-container').innerHTML=''; }
-
-// ── BOOT ─────────────────────────────────────────────────────────────────────
-initApp();
-</script>
-</body>
-</html>
