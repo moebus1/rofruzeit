@@ -2073,6 +2073,286 @@ async function renderTimeAccounts(){
   };
 }
 
+// ── SETTINGS PAGE (Employee) ──────────────────────────────────────────────────
+async function renderSettings(){
+  document.getElementById('page-content').innerHTML=
+    '<div class="page-header">'
+    +'<div class="page-title">⚙️ Einstellungen</div>'
+    +'<div class="page-sub">Konto & Passwort verwalten</div>'
+    +'</div>'
+    +'<div class="card">'
+    +'<div class="card-title">🔒 Passwort ändern</div>'
+    +'<div id="pw-msg"></div>'
+    +'<div class="form-group"><label class="form-label">Neues Passwort</label>'
+    +'<input class="form-input" type="password" id="pw-new" placeholder="Mindestens 6 Zeichen"></div>'
+    +'<div class="form-group"><label class="form-label">Passwort bestätigen</label>'
+    +'<input class="form-input" type="password" id="pw-confirm" placeholder="Passwort wiederholen"></div>'
+    +'<button class="btn-sm btn-green" onclick="changePassword()">Passwort speichern</button>'
+    +'</div>'
+    +'<div class="card">'
+    +'<div class="card-title">👤 Mein Profil</div>'
+    +'<div style="font-size:13px;color:var(--s600);line-height:1.8">'
+    +'<div><strong>Name:</strong> '+currentProfile.name+'</div>'
+    +'<div><strong>E-Mail:</strong> '+currentUser.email+'</div>'
+    +'<div><strong>Abteilung:</strong> '+(currentProfile.department||'—')+'</div>'
+    +'<div><strong>Typ:</strong> '+(currentProfile.employee_type==='account'?'Festanstellung':'Minijob')+'</div>'
+    +'</div></div>';
+
+  window.changePassword=async function(){
+    const pw=document.getElementById('pw-new').value;
+    const pw2=document.getElementById('pw-confirm').value;
+    const msg=document.getElementById('pw-msg');
+    msg.innerHTML='';
+    if(pw.length<6){msg.innerHTML='<div class="error-box">Mindestens 6 Zeichen.</div>';return;}
+    if(pw!==pw2){msg.innerHTML='<div class="error-box">Passwörter stimmen nicht überein.</div>';return;}
+    const {error}=await sb.auth.updateUser({password:pw});
+    if(error){msg.innerHTML='<div class="error-box">'+error.message+'</div>';return;}
+    msg.innerHTML='<div class="success-box">✅ Passwort geändert!</div>';
+    document.getElementById('pw-new').value='';
+    document.getElementById('pw-confirm').value='';
+  };
+}
+
+// ── QR ADMIN PAGE ─────────────────────────────────────────────────────────────
+async function renderQRAdmin(){
+  const stampURL=window.location.origin+window.location.pathname+'?stamp=1';
+  const qrURL='https://api.qrserver.com/v1/create-qr-code/?size=300x300&data='+encodeURIComponent(stampURL);
+  document.getElementById('page-content').innerHTML=
+    '<div class="page-header">'
+    +'<div class="page-title">📲 QR-Stempel</div>'
+    +'<div class="page-sub">Zum Ein- und Ausstempeln vor Ort aufhängen</div>'
+    +'</div>'
+    +'<div class="card" style="text-align:center;max-width:480px;margin:0 auto">'
+    +'<div style="font-size:14px;font-weight:600;color:var(--s700);margin-bottom:16px">QR-Code zum Stempeln</div>'
+    +'<img src="'+qrURL+'" style="width:260px;height:260px;border-radius:12px;border:3px solid var(--g200)" alt="QR Code">'
+    +'<div style="margin-top:16px;font-size:13px;color:var(--s500);line-height:1.6">'
+    +'Mitarbeiter scannen diesen Code mit dem Smartphone.<br>'
+    +'Beim ersten Scan: <strong style="color:var(--g700)">Einstempeln</strong><br>'
+    +'Beim zweiten Scan: <strong style="color:var(--r600)">Ausstempeln</strong>'
+    +'</div>'
+    +'<div style="margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'
+    +'<button class="btn-sm btn-green" onclick="openQRPrint()">🖨️ QR-Code drucken</button>'
+    +'<button class="btn-sm btn-outline" onclick="copyQRLink()">🔗 Link kopieren</button>'
+    +'</div></div>'
+    +'<div class="card" style="max-width:480px;margin:16px auto 0">'
+    +'<div class="card-title">ℹ️ So funktioniert es</div>'
+    +'<div style="font-size:13px;color:var(--s600);line-height:1.8">'
+    +'<div>1. QR-Code ausdrucken und am Eingang aufhängen</div>'
+    +'<div>2. Mitarbeiter öffnen die App auf dem Smartphone</div>'
+    +'<div>3. QR-Code scannen → automatisch ein- oder ausstempeln</div>'
+    +'<div>4. Erster Scan = Einstempeln, zweiter Scan = Ausstempeln</div>'
+    +'</div></div>'
+    +'<div style="background:var(--s50);border-radius:12px;padding:14px;max-width:480px;margin:0 auto;font-size:12px;color:var(--s500)">'
+    +'<strong>Stempel-URL:</strong> <span style="font-family:var(--mono);word-break:break-all">'+stampURL+'</span>'
+    +'</div>';
+}
+
+// ── EDIT TIMES (Admin/Planner) ────────────────────────────────────────────────
+async function renderEditTimes(){
+  const {data:empData}=await sb.from('profiles').select('*').eq('role','employee');
+  const employees=empData||[];
+  window._etEmp=employees[0]?.id||'';
+  window._etDate=todayStr;
+
+  async function loadEntries(){
+    const empId=window._etEmp;
+    const date=window._etDate;
+    if(!empId||!date){
+      document.getElementById('et-entries').innerHTML='<p style="color:var(--s400);font-size:13px">Mitarbeiter und Datum wählen…</p>';
+      return;
+    }
+    document.getElementById('et-entries').innerHTML='<p style="color:var(--s400);font-size:13px">Lade…</p>';
+    const {data,error}=await sb.from('time_entries').select('*').eq('employee_id',empId).eq('date',date).order('clock_in');
+    if(error){document.getElementById('et-entries').innerHTML='<p style="color:var(--r600);font-size:13px">Fehler: '+error.message+'</p>';return;}
+    const entries=data||[];
+    function inp(id,field,val,type,w){
+      return '<input data-id="'+id+'" data-field="'+field+'"'
+        +' style="width:'+w+'px;padding:4px 6px;border:1px solid var(--s200);border-radius:6px;font-family:var(--mono);font-size:13px"'
+        +' type="'+type+'" value="'+(val!=null?val:'')+'"'
+        +' onchange="window.updateEntry(this.dataset.id,this.dataset.field,this.value)">';
+    }
+    document.getElementById('et-entries').innerHTML=entries.length===0
+      ?'<p style="color:var(--s400);font-size:13px">Keine Buchungen für diesen Tag.</p>'
+      :'<table><thead><tr><th>Beginn</th><th>Ende</th><th>Dauer (min)</th><th>Notiz</th><th></th></tr></thead><tbody>'
+      +entries.map(function(e){
+        return '<tr>'
+          +'<td>'+inp(e.id,'clock_in',e.clock_in,'time',85)+'</td>'
+          +'<td>'+inp(e.id,'clock_out',e.clock_out,'time',85)+'</td>'
+          +'<td>'+inp(e.id,'duration_minutes',e.duration_minutes,'number',70)+'</td>'
+          +'<td><input data-id="'+e.id+'" data-field="note" style="width:160px;padding:4px 6px;border:1px solid var(--s200);border-radius:6px;font-size:13px" value="'+(e.note||'')+'" onchange="window.updateEntry(this.dataset.id,this.dataset.field,this.value)"></td>'
+          +'<td><button class="btn-sm btn-red" style="font-size:11px;padding:4px 8px" data-eid="'+e.id+'" onclick="window.deleteEntry(this.dataset.eid)">✕</button></td>'
+          +'</tr>';
+      }).join('')+'</tbody></table>';
+  }
+
+  document.getElementById('page-content').innerHTML=
+    '<div class="page-header"><div class="page-title">✏️ Zeiten korrigieren</div>'
+    +'<div class="page-sub">Buchungen manuell bearbeiten oder ergänzen</div></div>'
+    +'<div class="card">'
+    +'<div class="two-col" style="margin-bottom:16px">'
+    +'<div class="form-group" style="margin:0"><label class="form-label">Mitarbeiter</label>'
+    +'<select class="form-select" id="et-emp" onchange="window._etEmp=this.value;window.loadEntries()">'
+    +employees.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
+    +'</select></div>'
+    +'<div class="form-group" style="margin:0"><label class="form-label">Datum</label>'
+    +'<input class="form-input" type="date" id="et-date" value="'+todayStr+'" onchange="window._etDate=this.value;window.loadEntries()">'
+    +'</div></div>'
+    +'<div id="et-entries"></div>'
+    +'<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--s100)">'
+    +'<div style="font-size:13px;font-weight:600;color:var(--s600);margin-bottom:10px">➕ Neue Buchung eintragen</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'
+    +'<div><label class="form-label">Beginn</label><input class="form-input" type="time" id="et-new-in" style="width:120px"></div>'
+    +'<div><label class="form-label">Ende</label><input class="form-input" type="time" id="et-new-out" style="width:120px"></div>'
+    +'<div><label class="form-label">Notiz</label><input class="form-input" id="et-new-note" placeholder="Optional" style="width:160px"></div>'
+    +'<button class="btn-sm btn-green" onclick="window.addEntry()">+ Eintragen</button>'
+    +'</div></div></div>';
+
+  window.loadEntries=loadEntries;
+  window.updateEntry=async function(id,field,val){
+    const upd={};
+    if(field==='duration_minutes') upd[field]=parseInt(val)||0;
+    else upd[field]=val||null;
+    await sb.from('time_entries').update(upd).eq('id',id);
+  };
+  window.deleteEntry=async function(id){
+    if(!confirm('Buchung wirklich löschen?')) return;
+    await sb.from('time_entries').delete().eq('id',id);
+    loadEntries();
+  };
+  window.addEntry=async function(){
+    const ci=document.getElementById('et-new-in').value;
+    const co=document.getElementById('et-new-out').value;
+    const note=document.getElementById('et-new-note').value;
+    const date=document.getElementById('et-date').value;
+    const emp=document.getElementById('et-emp').value;
+    if(!ci||!emp||!date){alert('Bitte Mitarbeiter, Datum und Beginn angeben.');return;}
+    let dur=0;
+    if(co){const a=ci.split(':').map(Number),b=co.split(':').map(Number);dur=(b[0]*60+b[1])-(a[0]*60+a[1]);}
+    await sb.from('time_entries').insert({employee_id:emp,date,clock_in:ci,clock_out:co||null,duration_minutes:dur,note:note||''});
+    document.getElementById('et-new-in').value='';
+    document.getElementById('et-new-out').value='';
+    document.getElementById('et-new-note').value='';
+    loadEntries();
+  };
+  loadEntries();
+}
+
+// ── RECURRING SHIFTS (Admin/Planner) ─────────────────────────────────────────
+async function renderRecurringShifts(){
+  const [empRes,recRes]=await Promise.all([
+    sb.from('profiles').select('*').eq('role','employee'),
+    sb.from('recurring_shifts').select('*')
+  ]);
+  const employees=empRes.data||[], recurring=recRes.data||[];
+  const DOW=['','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag','Sonntag'];
+  const empMap={}; employees.forEach(function(e){empMap[e.id]=e;});
+
+  var html='<div class="page-header"><div class="page-header-row">'
+    +'<div><div class="page-title">🔁 Feste Arbeitszeiten</div>'
+    +'<div class="page-sub">Wiederkehrende Schichten pro Mitarbeiter</div></div>'
+    +'<button class="btn-sm btn-green" onclick="openAddRecurring()">+ Neue Regelzeit</button>'
+    +'</div></div>';
+
+  const activeRec=recurring.filter(function(r){return r.active;});
+  if(activeRec.length===0){
+    html+='<div class="card"><p style="color:var(--s400);font-size:13px">Noch keine festen Arbeitszeiten definiert.</p></div>';
+  } else {
+    employees.forEach(function(emp){
+      const empRec=activeRec.filter(function(r){return r.employee_id===emp.id;}).sort(function(a,b){return a.day_of_week-b.day_of_week;});
+      if(!empRec.length) return;
+      html+='<div class="card"><div class="card-title">👤 '+emp.name+' <span class="text-sm">'+(emp.department||'')+'</span></div>'
+        +'<table><thead><tr><th>Wochentag</th><th>Beginn</th><th>Ende</th><th>Dauer</th><th></th></tr></thead><tbody>'
+        +empRec.map(function(r){
+          const h1=parseInt(r.start_time),m1=parseInt(r.start_time.split(':')[1]);
+          const h2=parseInt(r.end_time),m2=parseInt(r.end_time.split(':')[1]);
+          const dur=(h2*60+m2)-(h1*60+m1);
+          return '<tr>'
+            +'<td><strong>'+DOW[r.day_of_week]+'</strong></td>'
+            +'<td class="text-mono">'+r.start_time.slice(0,5)+'</td>'
+            +'<td class="text-mono">'+r.end_time.slice(0,5)+'</td>'
+            +'<td class="text-mono">'+fmtMins(dur)+'</td>'
+            +'<td><button class="btn-sm btn-red" style="font-size:11px;padding:4px 8px" data-rid="'+r.id+'" onclick="deleteRecurring(this.dataset.rid)">✕</button></td>'
+            +'</tr>';
+        }).join('')
+        +'</tbody></table></div>';
+    });
+  }
+
+  html+='<div class="card" style="background:var(--a50);border-color:var(--a400)">'
+    +'<div style="font-size:13px;color:#92400e">ℹ️ Im Dienstplan auf <strong>🔁 Regelzeiten</strong> klicken um sie für einen Monat zu übernehmen.</div></div>';
+
+  document.getElementById('page-content').innerHTML=html;
+
+  window.deleteRecurring=async function(id){
+    await sb.from('recurring_shifts').update({active:false}).eq('id',id);
+    renderRecurringShifts();
+  };
+
+  window.openAddRecurring=function(){
+    const days=[{v:1,l:'Mo'},{v:2,l:'Di'},{v:3,l:'Mi'},{v:4,l:'Do'},{v:5,l:'Fr'},{v:6,l:'Sa'},{v:7,l:'So'}];
+    document.getElementById('modal-container').innerHTML=
+      '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+      +'<div class="modal">'
+      +'<div class="modal-title">🔁 Neue feste Arbeitszeit</div>'
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+      +'<select class="form-select" id="rec-emp">'
+      +employees.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
+      +'</select></div>'
+      +'<div class="form-group"><label class="form-label">Wochentage</label>'
+      +'<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:6px">'
+      +days.map(function(d){
+        return '<div id="day-btn-'+d.v+'" data-v="'+d.v+'" onclick="toggleDayBtn(this.dataset.v)"'
+          +' style="padding:10px 4px;border-radius:10px;border:1.5px solid var(--s200);text-align:center;cursor:pointer">'
+          +'<div style="font-size:12px;font-weight:600;color:var(--s600)">'+d.l+'</div>'
+          +'<div style="font-size:16px;margin-top:4px">○</div></div>';
+      }).join('')
+      +'</div></div>'
+      +'<div class="two-col">'
+      +'<div class="form-group"><label class="form-label">Beginn</label><input class="form-input" type="time" id="rec-start" value="08:00"></div>'
+      +'<div class="form-group"><label class="form-label">Ende</label><input class="form-input" type="time" id="rec-end" value="16:00"></div>'
+      +'</div>'
+      +'<div id="rec-preview" style="font-size:12px;color:var(--s500);min-height:18px;margin-bottom:4px"></div>'
+      +'<div class="modal-footer">'
+      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+      +'<button class="btn-sm btn-green" onclick="saveRecurring()">Speichern</button>'
+      +'</div></div></div>';
+
+    let selectedDays=new Set();
+    window.toggleDayBtn=function(v){
+      const el=document.getElementById('day-btn-'+v);
+      if(selectedDays.has(parseInt(v))){
+        selectedDays.delete(parseInt(v));
+        el.style.borderColor='var(--s200)'; el.style.background='white';
+        el.querySelector('div:last-child').textContent='○';
+        el.querySelector('div:first-child').style.color='var(--s600)';
+      } else {
+        selectedDays.add(parseInt(v));
+        el.style.borderColor='var(--g500)'; el.style.background='var(--g50)';
+        el.querySelector('div:last-child').textContent='✅';
+        el.querySelector('div:first-child').style.color='var(--g700)';
+      }
+      const dayNames=['','Mo','Di','Mi','Do','Fr','Sa','So'];
+      const p=document.getElementById('rec-preview');
+      if(p) p.textContent=selectedDays.size?'Gewählt: '+[...selectedDays].sort().map(function(d){return dayNames[d];}).join(', '):'';
+    };
+    window.saveRecurring=async function(){
+      const emp=document.getElementById('rec-emp').value;
+      const start=document.getElementById('rec-start').value;
+      const end=document.getElementById('rec-end').value;
+      if(!emp||!start||!end){alert('Bitte alle Felder ausfüllen.');return;}
+      if(selectedDays.size===0){alert('Bitte mindestens einen Wochentag auswählen.');return;}
+      const rows=[...selectedDays].map(function(dow){return {employee_id:emp,day_of_week:dow,start_time:start,end_time:end,active:true};});
+      const {error}=await sb.from('recurring_shifts').insert(rows);
+      if(error){alert('Fehler: '+error.message);return;}
+      closeModal(); renderRecurringShifts();
+    };
+  };
+}
+
+
+function openQRPrint(){ const u=document.querySelector('[alt="QR Code"]')?.src; if(u) window.open(u,'_blank'); }
+function copyQRLink(){ const u=window.location.origin+window.location.pathname+'?stamp=1'; navigator.clipboard.writeText(u).then(function(){alert('Link kopiert!');}); }
+
 // ── BOOT ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function(){
   initApp();
