@@ -617,6 +617,31 @@ async function renderDashboard(){
       <div class="stat-card"><div class="stat-label">Aktiv eingestempelt</div><div class="stat-value">${todayEntries.filter(e=>e.clock_in&&!e.clock_out).length}</div></div>
       <div class="stat-card"><div class="stat-label">Stunden diese Woche</div><div class="stat-value text-mono">${fmtMins(weekMins)}</div></div>
     </div>
+    <div class="card" style="border-color:var(--g300);background:var(--g50)">
+      <div class="card-title">⚡ Schnell stempeln</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <label class="form-label">Mitarbeiter</label>
+          <select class="form-select" id="qs-emp" style="width:180px">
+            ${employees.map(e=>'<option value="'+e.id+'">'+e.name+'</option>').join('')}
+          </select>
+        </div>
+        <div>
+          <label class="form-label">Datum</label>
+          <input class="form-input" type="date" id="qs-date" value="${todayStr}" style="width:150px">
+        </div>
+        <div>
+          <label class="form-label">Uhrzeit</label>
+          <input class="form-input" type="time" id="qs-time" value="${nowTimeStr()}" style="width:120px">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn-sm btn-green" onclick="quickStamp('in')">✅ Einstempeln</button>
+          <button class="btn-sm btn-red" onclick="quickStamp('out')">⏹ Ausstempeln</button>
+          <button class="btn-sm btn-amber" onclick="quickStamp('pause')">☕ Pause</button>
+        </div>
+      </div>
+      <div id="qs-msg" style="margin-top:10px;font-size:13px"></div>
+    </div>
     <div class="card">
       <div class="card-title">📅 Heutige Schichten</div>
       ${todayShifts.length===0?'<p style="color:var(--s400);font-size:13px">Keine Schichten geplant.</p>':
@@ -2547,6 +2572,69 @@ function showStampFeedback(action,msg,isIn){
     +'<div style="font-size:15px;color:var(--s500);max-width:300px;line-height:1.5">'+msg+'</div>'
     +'<button class="btn-sm btn-green" style="margin-top:24px" onclick="goHome()">Zur Übersicht</button>'
     +'</div>';
+}
+
+
+// ── QUICK STAMP (Admin Dashboard) ────────────────────────────────────────────
+async function quickStamp(action){
+  const empId=document.getElementById('qs-emp').value;
+  const date=document.getElementById('qs-date').value;
+  const time=document.getElementById('qs-time').value;
+  const msg=document.getElementById('qs-msg');
+  if(!empId||!date||!time){msg.innerHTML='<span style="color:var(--r600)">Bitte alle Felder ausfüllen.</span>';return;}
+
+  if(action==='in'){
+    // Check if already clocked in
+    const {data:existing}=await sb.from('time_entries').select('*')
+      .eq('employee_id',empId).eq('date',date).is('clock_out',null).maybeSingle();
+    if(existing){msg.innerHTML='<span style="color:var(--a600)">⚠️ Bereits eingestempelt seit '+existing.clock_in.slice(0,5)+'</span>';return;}
+    const {error}=await sb.from('time_entries').insert({employee_id:empId,date,clock_in:time,note:'Admin-Eintrag'});
+    if(error){msg.innerHTML='<span style="color:var(--r600)">Fehler: '+error.message+'</span>';return;}
+    msg.innerHTML='<span style="color:var(--g600)">✅ Eingestempelt um '+time+' Uhr</span>';
+
+  } else if(action==='out'){
+    const {data:open}=await sb.from('time_entries').select('*')
+      .eq('employee_id',empId).eq('date',date).is('clock_out',null).maybeSingle();
+    if(!open){msg.innerHTML='<span style="color:var(--a600)">⚠️ Kein offener Eintrag gefunden. Bitte zuerst einstempeln.</span>';return;}
+    const [h1,m1]=open.clock_in.split(':').map(Number);
+    const [h2,m2]=time.split(':').map(Number);
+    const dur=Math.max(0,(h2*60+m2)-(h1*60+m1));
+    // Close open break if any
+    const {data:openBreak}=await sb.from('break_entries').select('*')
+      .eq('employee_id',empId).eq('date',date).is('pause_end',null).maybeSingle();
+    if(openBreak){
+      const [bh1,bm1]=openBreak.pause_start.split(':').map(Number);
+      const bDur=Math.max(1,(h2*60+m2)-(bh1*60+bm1));
+      await sb.from('break_entries').update({pause_end:time,duration_minutes:bDur}).eq('id',openBreak.id);
+    }
+    const {error}=await sb.from('time_entries').update({clock_out:time,duration_minutes:dur}).eq('id',open.id);
+    if(error){msg.innerHTML='<span style="color:var(--r600)">Fehler: '+error.message+'</span>';return;}
+    msg.innerHTML='<span style="color:var(--g600)">✅ Ausgestempelt um '+time+' Uhr ('+fmtMins(dur)+')</span>';
+
+  } else if(action==='pause'){
+    // Check if open break already exists
+    const {data:openBreak}=await sb.from('break_entries').select('*')
+      .eq('employee_id',empId).eq('date',date).is('pause_end',null).maybeSingle();
+    if(openBreak){
+      // End the break
+      const [bh1,bm1]=openBreak.pause_start.split(':').map(Number);
+      const [h2,m2]=time.split(':').map(Number);
+      const bDur=Math.max(1,(h2*60+m2)-(bh1*60+bm1));
+      const {error}=await sb.from('break_entries').update({pause_end:time,duration_minutes:bDur}).eq('id',openBreak.id);
+      if(error){msg.innerHTML='<span style="color:var(--r600)">Fehler: '+error.message+'</span>';return;}
+      msg.innerHTML='<span style="color:var(--g600)">✅ Pause beendet um '+time+' Uhr ('+fmtMins(bDur)+')</span>';
+    } else {
+      // Check if clocked in
+      const {data:open}=await sb.from('time_entries').select('*')
+        .eq('employee_id',empId).eq('date',date).is('clock_out',null).maybeSingle();
+      if(!open){msg.innerHTML='<span style="color:var(--a600)">⚠️ Mitarbeiter ist nicht eingestempelt.</span>';return;}
+      const {error}=await sb.from('break_entries').insert({employee_id:empId,date,pause_start:time});
+      if(error){msg.innerHTML='<span style="color:var(--r600)">Fehler: '+error.message+'</span>';return;}
+      msg.innerHTML='<span style="color:var(--a600)">☕ Pause gestartet um '+time+' Uhr</span>';
+    }
+  }
+  // Refresh dashboard after 1.5s
+  setTimeout(renderDashboard, 1500);
 }
 
 
