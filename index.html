@@ -1907,7 +1907,12 @@ async function renderTimeAccounts(){
       const empAdj=adjustments.filter(function(a){return a.employee_id===emp.id;});
       const totalAdjAll=empAdj.reduce(function(s,a){return s+a.hours;},0);
       const latestAcc=empAccs[0];
-      const displayBalance=Math.round(((latestAcc?latestAcc.balance:0)+totalAdjAll)*10)/10;
+      // Aktueller Kontostand = letzter gebuchter Saldo + Anpassungen + laufende Periode
+      // Wenn noch kein Abschluss: zeige einfach den "Neuer Saldo" aus der aktuellen Periode
+      const baseBalance=latestAcc?latestAcc.balance:0;
+      const displayBalance=latestAcc
+        ? Math.round((baseBalance+totalAdjAll)*10)/10  // hat Abschlüsse: letzter Saldo + Anpassungen
+        : Math.round(d.newBalance*10)/10;               // kein Abschluss: live Berechnung zeigen
 
       html+='<div class="card">'
         +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">'
