@@ -2135,35 +2135,105 @@ async function renderTimeAccounts(){
   };
 
   window.openAccountAdjust=function(preEmpId){
+    const empOptions=employees.map(function(e){
+      return '<option value="'+e.id+'"'+(e.id===preEmpId?' selected':'')+'>'+e.name+'</option>';
+    }).join('');
+
     document.getElementById('modal-container').innerHTML=
       '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
       +'<div class="modal">'
-      +'<div class="modal-title">✏️ Arbeitszeitkonto manuell anpassen</div>'
-      +'<p style="font-size:13px;color:var(--s500);margin-bottom:16px">'
-      +'Direkter Eingriff in den Kontostand. Negativ = Konto reduzieren. Positiv = Konto erhöhen.</p>'
-      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
-      +'<select class="form-select" id="adj-emp">'
-      +employees.map(function(e){return '<option value="'+e.id+'"'+(e.id===preEmpId?' selected':'')+'>'+e.name+'</option>';}).join('')
-      +'</select></div>'
-      +'<div class="two-col">'
-      +'<div class="form-group"><label class="form-label">Datum</label>'
-      +'<input class="form-input" type="date" id="adj-date" value="'+todayStr+'"></div>'
-      +'<div class="form-group"><label class="form-label">Neuer Kontostand (h)</label>'
-      +'<input class="form-input" type="number" step="0.25" id="adj-hours" placeholder="z.B. 5.5 oder -2"></div>'
+      +'<div class="modal-title">✏️ Zeitkonto anpassen</div>'
+
+      // Tab buttons
+      +'<div style="display:flex;gap:8px;margin-bottom:16px">'
+      +'<button id="tab-set" class="btn-sm btn-green" data-show="adj-tab-set-panel" data-hide="adj-tab-diff-panel" onclick="showAdjTab(this)" style="flex:1">Kontostand setzen</button>'
+      +'<button id="tab-diff" class="btn-sm btn-outline" data-show="adj-tab-diff-panel" data-hide="adj-tab-set-panel" onclick="showAdjTab(this)" style="flex:1">Differenz buchen</button>'
       +'</div>'
+
+      // Tab: set balance directly
+      +'<div id="adj-tab-set-panel">'
+      +'<p style="font-size:13px;color:var(--s500);margin-bottom:12px">Setzt den Kontostand direkt auf den eingegebenen Wert.</p>'
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+      +'<select class="form-select" id="adj-emp-set">'+empOptions+'</select></div>'
+      +'<div class="form-group"><label class="form-label">Neuer Kontostand (Stunden)</label>'
+      +'<input class="form-input" type="number" step="0.25" id="adj-balance-set" placeholder="z.B. 5.5 oder -2.0"></div>'
       +'<div class="form-group"><label class="form-label">Grund</label>'
-      +'<input class="form-input" id="adj-reason" placeholder="z.B. Korrektur, Überstunden ausgezahlt…"></div>'
+      +'<input class="form-input" id="adj-reason-set" placeholder="z.B. Startsaldo, Korrektur…"></div>'
       +'<div class="modal-footer">'
       +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
-      +'<button class="btn-sm btn-green" onclick="saveAccountAdjust()">Speichern</button>'
-      +'</div></div></div>';
-    window.saveAccountAdjust=async function(){
-      const empId=document.getElementById('adj-emp').value;
-      const date=document.getElementById('adj-date').value;
-      const hours=parseFloat(document.getElementById('adj-hours').value);
-      const reason=document.getElementById('adj-reason').value.trim();
-      if(!date||isNaN(hours)||!reason){alert('Bitte alle Felder ausfüllen.');return;}
-      await sb.from('account_adjustments').insert({employee_id:empId,date,hours,reason,created_by:currentUser.id});
+      +'<button class="btn-sm btn-green" onclick="saveBalanceSet()">Kontostand setzen</button>'
+      +'</div></div>'
+
+      // Tab: add/subtract
+      +'<div id="adj-tab-diff-panel" style="display:none">'
+      +'<p style="font-size:13px;color:var(--s500);margin-bottom:12px">Addiert oder subtrahiert Stunden vom aktuellen Kontostand.</p>'
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+      +'<select class="form-select" id="adj-emp-diff">'+empOptions+'</select></div>'
+      +'<div class="form-group"><label class="form-label">Stunden (+ oder -)</label>'
+      +'<input class="form-input" type="number" step="0.25" id="adj-hours-diff" placeholder="z.B. -8 (Abbau) oder +4 (Gutschrift)"></div>'
+      +'<div class="form-group"><label class="form-label">Grund</label>'
+      +'<input class="form-input" id="adj-reason-diff" placeholder="z.B. Überstunden abgefeiert, Auszahlung…"></div>'
+      +'<div class="modal-footer">'
+      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+      +'<button class="btn-sm btn-green" onclick="saveDiffAdjust()">Buchen</button>'
+      +'</div></div>'
+
+      +'</div></div>';
+
+    window.showAdjTab=function(btn){
+      document.getElementById(btn.dataset.show).style.display='block';
+      document.getElementById(btn.dataset.hide).style.display='none';
+      btn.className='btn-sm btn-green';
+      btn.parentElement.querySelectorAll('.btn-sm').forEach(function(b){if(b!==btn)b.className='btn-sm btn-outline';});
+    };
+
+    // Save: set balance directly by creating a time_accounts entry
+    window.saveBalanceSet=async function(){
+      const empId=document.getElementById('adj-emp-set').value;
+      const balance=parseFloat(document.getElementById('adj-balance-set').value);
+      const reason=document.getElementById('adj-reason-set').value.trim();
+      if(isNaN(balance)||!reason){alert('Bitte alle Felder ausfüllen.');return;}
+      const emp=employees.find(function(e){return e.id===empId;});
+      const monthlyH=emp?Math.round((emp.weekly_hours||0)*52/12*10)/10:0;
+      const now2=new Date();
+      const year=now2.getFullYear(), month=now2.getMonth()+1;
+      // Upsert a time_accounts entry that sets the balance
+      const {error}=await sb.from('time_accounts').upsert({
+        employee_id:empId,
+        year:year,
+        month:month,
+        hours_target:monthlyH,
+        hours_worked:monthlyH+balance,
+        hours_paid_out:0,
+        balance:balance
+      },{onConflict:'employee_id,year,month'});
+      if(error){alert('Fehler: '+error.message);return;}
+      closeModal(); renderTimeAccounts();
+    };
+
+    // Save: add/subtract from current balance
+    window.saveDiffAdjust=async function(){
+      const empId=document.getElementById('adj-emp-diff').value;
+      const hours=parseFloat(document.getElementById('adj-hours-diff').value);
+      const reason=document.getElementById('adj-reason-diff').value.trim();
+      if(isNaN(hours)||!reason){alert('Bitte alle Felder ausfüllen.');return;}
+      // Save as account_adjustment
+      const {error}=await sb.from('account_adjustments').insert({
+        employee_id:empId,
+        date:todayStr,
+        hours:hours,
+        reason:reason,
+        created_by:currentUser.id
+      });
+      if(error){alert('Fehler: '+error.message);return;}
+      // Also update the latest time_accounts entry balance
+      const empAccs=accounts.filter(function(a){return a.employee_id===empId;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
+      if(empAccs.length>0){
+        const latest=empAccs[0];
+        const newBalance=Math.round((latest.balance+hours)*10)/10;
+        await sb.from('time_accounts').update({balance:newBalance})
+          .eq('employee_id',empId).eq('year',latest.year).eq('month',latest.month);
+      }
       closeModal(); renderTimeAccounts();
     };
   };
