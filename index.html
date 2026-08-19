@@ -6,6 +6,8 @@
 <title>RoFru-Arbeitszeitplaner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1555,10 +1557,21 @@ async function renderReports(){
 
 // ── USERS PAGE ───────────────────────────────────────────────────────────────
 async function renderUsers(){
-  const { data } = await sb.from('profiles').select('*');
-  const profiles = data||[];
-  const employees = profiles.filter(p=>p.role==='employee');
-  const planners  = profiles.filter(p=>p.role==='planner');
+  const [profRes, vacRes] = await Promise.all([
+    sb.from('profiles').select('*'),
+    sb.from('vacation_requests').select('*').eq('status','approved')
+  ]);
+  const profiles=profRes.data||[];
+  const employees=profiles.filter(p=>p.role==='employee');
+  const planners=profiles.filter(p=>p.role==='planner');
+  // Count used vacation days per employee (current year)
+  const curYear=new Date().getFullYear();
+  const vacMap={};
+  (vacRes.data||[]).forEach(function(v){
+    if(new Date(v.date_from).getFullYear()===curYear){
+      vacMap[v.employee_id]=(vacMap[v.employee_id]||0)+v.days;
+    }
+  });
 
   document.getElementById('page-content').innerHTML=`
     <div class="page-header">
@@ -1575,15 +1588,24 @@ async function renderUsers(){
     </div>
     <div class="card">
       <div class="card-title">👷 Mitarbeiter (${employees.length})</div>
-      <table><thead><tr><th>Name</th><th>Abteilung</th><th>Typ</th><th>Wochenstunden</th><th>Urlaubstage/J.</th><th></th></tr></thead><tbody>
-      ${employees.map(u=>`<tr>
-        <td><strong>${u.name}</strong></td>
-        <td>${u.department||'—'}</td>
-        <td>${u.employee_type==='account'?'<span class="badge badge-green">Zeitkonto</span>':'<span class="badge badge-slate">Minijob</span>'}</td>
-        <td class="text-mono">${u.employee_type==='account'?(u.weekly_hours||0)+' h/Wo':'—'}</td>
-        <td class="text-mono">${u.vacation_days_per_year||0} Tage</td>
-        <td><button class="btn-sm btn-outline" style="font-size:12px" onclick="openEditEmployee('${u.id}','${u.name}','${u.department||''}','${u.employee_type||'minijob'}',${u.weekly_hours||0},${u.vacation_days_per_year||0})">✏️ Bearbeiten</button></td>
-        </tr>`).join('')}
+      <table><thead><tr><th>Name</th><th>Abteilung</th><th>Typ</th><th>Wo-Std.</th><th>Urlaub/Jahr</th><th>Genommen</th><th>Rest</th><th></th></tr></thead><tbody>
+      ${employees.map(u=>{
+        const used=vacMap[u.id]||0;
+        const total=u.vacation_days_per_year||0;
+        const rest=total-used;
+        return '<tr>'
+          +'<td><strong>'+u.name+'</strong></td>'
+          +'<td>'+(u.department||'—')+'</td>'
+          +'<td>'+(u.employee_type==='account'?'<span class="badge badge-green">Zeitkonto</span>':'<span class="badge badge-slate">Minijob</span>')+'</td>'
+          +'<td class="text-mono">'+(u.employee_type==='account'?(u.weekly_hours||0)+' h':'—')+'</td>'
+          +'<td class="text-mono">'+total+' Tage</td>'
+          +'<td class="text-mono">'+used+' Tage</td>'
+          +'<td class="text-mono" style="font-weight:600;color:'+(rest>5?'var(--g600)':rest>0?'var(--a600)':'var(--r600)')+'">'+rest+' Tage</td>'
+          +'<td><button class="btn-sm btn-outline" style="font-size:12px"'
+          +' data-id="'+u.id+'" data-name="'+u.name.replace(/"/g,'&quot;')+'" data-dept="'+(u.department||'')+'" data-type="'+(u.employee_type||'minijob')+'" data-wh="'+(u.weekly_hours||0)+'" data-vac="'+(u.vacation_days_per_year||0)+'"'
+          +' onclick="openEditEmployee(this.dataset.id,this.dataset.name,this.dataset.dept,this.dataset.type,parseFloat(this.dataset.wh),parseInt(this.dataset.vac))">✏️</button></td>'
+          +'</tr>';
+      }).join('')}
       </tbody></table>
     </div>
     <div class="card">
@@ -1957,7 +1979,10 @@ async function renderTimeAccounts(){
       +'<div><div class="page-title">Abrechnung</div>'
       +'<div class="page-sub">Zeitraum: '+fromLabel+' – '+toLabel+'</div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
-      +'<button class="btn-sm btn-outline" onclick="exportAbrechnung()">📥 Export</button>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button class="btn-sm btn-outline" onclick="exportAbrechnung()">📊 Excel</button>'
+      +'<button class="btn-sm btn-outline" onclick="exportAbrechnungPDF()">📄 PDF</button>'
+      +'</div>'
       +'</div></div></div>'
 
       // Period selector
@@ -2053,6 +2078,12 @@ async function renderTimeAccounts(){
       });
     }
 
+    // Store data for PDF export
+    window._pdfEmpData=employees.map(function(emp){
+      const nettoH=calcNetto(emp,billFrom,billTo);
+      const monthlyH=Math.round((emp.weekly_hours||0)*52/12*10)/10;
+      return {empId:emp.id,name:emp.name,dept:emp.department||'',netto:nettoH,soll:monthlyH};
+    });
     document.getElementById('page-content').innerHTML=html;
     window._billFrom=billFrom; window._billTo=billTo;
   }
@@ -2310,7 +2341,43 @@ async function renderQRAdmin(){
     +'</div></div>'
     +'<div style="background:var(--s50);border-radius:12px;padding:14px;max-width:480px;margin:0 auto;font-size:12px;color:var(--s500)">'
     +'<strong>Stempel-URL:</strong> <span style="font-family:var(--mono);word-break:break-all">'+stampURL+'</span>'
+    +'</div>'
+    +'<div class="card" style="max-width:480px;margin:16px auto 0">'
+    +'<div class="card-title">⏰ Stempel-Zeitfenster</div>'
+    +'<p style="font-size:13px;color:var(--s500);margin-bottom:12px">QR-Stempel ist nur in diesem Zeitraum möglich – verhindert Stempeln von zuhause.</p>'
+    +'<div class="two-col">'
+    +'<div class="form-group"><label class="form-label">Von</label><input class="form-input" type="time" id="sw-from" value="05:00"></div>'
+    +'<div class="form-group"><label class="form-label">Bis</label><input class="form-input" type="time" id="sw-to" value="22:00"></div>'
+    +'</div>'
+    +'<button class="btn-sm btn-green" onclick="saveStampWindow()">Zeitfenster speichern</button>'
+    +'<div id="sw-msg" style="margin-top:8px;font-size:13px"></div>'
     +'</div>';
+
+  // Load current stamp window
+  try{
+    const {data:sw}=await sb.from('app_settings').select('*').eq('key','stamp_window').maybeSingle();
+    if(sw&&sw.value){
+      const parts=sw.value.split('-');
+      if(parts.length===2){
+        document.getElementById('sw-from').value=parts[0];
+        document.getElementById('sw-to').value=parts[1];
+      }
+    }
+  }catch(e){}
+
+  window.saveStampWindow=async function(){
+    const from=document.getElementById('sw-from').value;
+    const to=document.getElementById('sw-to').value;
+    if(!from||!to){return;}
+    const val=from+'-'+to;
+    try{
+      await sb.from('app_settings').upsert({key:'stamp_window',value:val},{onConflict:'key'});
+      document.getElementById('sw-msg').innerHTML='<span style="color:var(--g600)">✅ Zeitfenster gespeichert: '+from+' – '+to+' Uhr</span>';
+    }catch(e){
+      // Table might not exist yet - create it
+      document.getElementById('sw-msg').innerHTML='<span style="color:var(--a600)">Bitte erst die app_settings Tabelle anlegen (SQL unten).</span>';
+    }
+  };
 }
 
 // ── EDIT TIMES (Admin/Planner) ────────────────────────────────────────────────
@@ -2557,6 +2624,87 @@ function getBavarianHolidays(year){
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
+// ── PDF EXPORT ABRECHNUNG ─────────────────────────────────────────────────────
+function exportAbrechnungPDF(){
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
+  const fromLabel=new Date(window._billFrom||'').toLocaleDateString('de-DE');
+  const toLabel=new Date(window._billTo||'').toLocaleDateString('de-DE');
+  const pageW=doc.internal.pageSize.getWidth();
+
+  // Header
+  doc.setFillColor(22,101,52); // green-800
+  doc.rect(0,0,pageW,28,'F');
+  doc.setTextColor(255,255,255);
+  doc.setFontSize(18);
+  doc.setFont('helvetica','bold');
+  doc.text('RoFru-Arbeitszeitplaner',14,12);
+  doc.setFontSize(11);
+  doc.setFont('helvetica','normal');
+  doc.text('Abrechnung: '+fromLabel+' – '+toLabel,14,20);
+  doc.setFontSize(9);
+  doc.text('Erstellt: '+new Date().toLocaleDateString('de-DE'),pageW-14,20,{align:'right'});
+
+  doc.setTextColor(0,0,0);
+
+  // Table
+  const empRows=[];
+  // Get employees from the page
+  const empCards=document.querySelectorAll('[data-eid]');
+  const seen=new Set();
+  const tableRows=[];
+
+  // Collect from _manualBilled and rendered page
+  document.querySelectorAll('.card [style*="font-family:var(--mono)"]').forEach(function(el){});
+
+  // Simpler: re-calculate from DOM
+  // We need to access the billing data - use window vars set during renderPage
+  if(!window._pdfEmpData||!window._pdfEmpData.length){
+    alert('Bitte kurz die Seite neu laden und nochmal versuchen.');
+    return;
+  }
+
+  window._pdfEmpData.forEach(function(row){
+    const manualKey=row.empId+'_'+(window._billFrom||'')+'_'+(window._billTo||'');
+    const manual=window._manualBilled&&window._manualBilled[manualKey]!=null?window._manualBilled[manualKey]:null;
+    tableRows.push([
+      row.name,
+      row.dept||'',
+      row.netto+'h',
+      row.soll+'h',
+      manual!=null?manual+'h':'—'
+    ]);
+  });
+
+  doc.autoTable({
+    startY:34,
+    head:[['Mitarbeiter','Abteilung','Gearbeitete Std.','Sollstunden','Abgerechnete Std.']],
+    body:tableRows,
+    headStyles:{fillColor:[22,101,52],textColor:255,fontStyle:'bold',fontSize:10},
+    bodyStyles:{fontSize:10,cellPadding:4},
+    alternateRowStyles:{fillColor:[240,253,244]},
+    columnStyles:{
+      0:{fontStyle:'bold',cellWidth:48},
+      1:{cellWidth:36},
+      2:{halign:'center',cellWidth:34},
+      3:{halign:'center',cellWidth:30},
+      4:{halign:'center',cellWidth:34,fontStyle:'bold'}
+    },
+    margin:{left:14,right:14},
+    styles:{lineColor:[203,213,225],lineWidth:0.2}
+  });
+
+  // Footer
+  const finalY=doc.lastAutoTable.finalY+10;
+  doc.setFontSize(8);
+  doc.setTextColor(100,116,139);
+  doc.text('RoFru-Arbeitszeitplaner – Vertraulich',14,finalY);
+  doc.text('Seite 1',pageW-14,finalY,{align:'right'});
+
+  doc.save('Abrechnung_'+(window._billFrom||'')+'_'+(window._billTo||'')+'.pdf');
+}
+
+
 function goHome(){ navigateTo('dashboard'); }
 function updateMonthlyCalc(v){ const el=document.getElementById('ee-monthly-calc'); if(el) el.textContent=Math.round(parseFloat(v||0)*52/12*10)/10+'h'; }
 function closeModal(){ document.getElementById('modal-container').innerHTML=''; }
@@ -2683,6 +2831,36 @@ async function handleQRStamp(){
   if(!params.has('stamp')) return;
   window.history.replaceState({},'',window.location.pathname);
   if(!currentUser||!currentProfile||currentProfile.role!=='employee') return;
+  // Check stamp time window – fetch from settings or use default 05:00-22:00
+  const now=new Date();
+  const nowMins=now.getHours()*60+now.getMinutes();
+  // Load stamp window from supabase app_settings if exists, else default
+  let stampFrom=5*60, stampTo=22*60; // 05:00-22:00
+  try{
+    const {data:sw}=await sb.from('app_settings').select('*').eq('key','stamp_window').maybeSingle();
+    if(sw&&sw.value){
+      const parts=sw.value.split('-');
+      if(parts.length===2){
+        const [fh,fm]=parts[0].split(':').map(Number);
+        const [th,tm]=parts[1].split(':').map(Number);
+        stampFrom=fh*60+fm; stampTo=th*60+tm;
+      }
+    }
+  }catch(e){}
+  if(nowMins<stampFrom||nowMins>stampTo){
+    const fromStr=pad(Math.floor(stampFrom/60))+':'+pad(stampFrom%60);
+    const toStr=pad(Math.floor(stampTo/60))+':'+pad(stampTo%60);
+    document.getElementById('page-content').innerHTML=
+      '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;text-align:center;padding:24px">'
+      +'<div style="font-size:80px;margin-bottom:16px">🔒</div>'
+      +'<div style="font-size:22px;font-weight:700;color:var(--r600);margin-bottom:8px">Stempeln nicht möglich</div>'
+      +'<div style="font-size:15px;color:var(--s500);max-width:280px;line-height:1.5">'
+      +'Das Stempeln ist nur zwischen '+fromStr+' und '+toStr+' Uhr möglich.<br><br>'
+      +'Aktuelle Uhrzeit: '+pad(now.getHours())+':'+pad(now.getMinutes())+' Uhr'
+      +'</div></div>';
+    navigateTo('dashboard');
+    return;
+  }
   const {data:open}=await sb.from('time_entries').select('*')
     .eq('employee_id',currentUser.id).eq('date',todayStr).is('clock_out',null).maybeSingle();
   if(open){
