@@ -2051,8 +2051,8 @@ async function renderTimeAccounts(){
           +'<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">'
           +'<button class="btn-sm btn-outline" style="font-size:12px" data-eid="'+emp.id+'" onclick="openAccountAdjust(this.dataset.eid)">&#9999; Konto anpassen</button>'
           +'<button class="btn-sm btn-green" style="font-size:12px"'
-          +' data-eid="'+emp.id+'"'
-          +' onclick="doAbschluss({eid:this.dataset.eid,netto:'+nettoH+',soll:'+monthlyH+'})">&#9989; Abschluss buchen</button>'
+          +' data-eid="'+emp.id+'" data-netto="'+nettoH+'" data-soll="'+monthlyH+'"'
+          +' onclick="doAbschlussBtn(this)">&#9989; Abschluss buchen</button>'
           +'</div>'
 
           +(empAccs.length>0
@@ -2100,197 +2100,66 @@ async function renderTimeAccounts(){
     window._manualBilled[key]=parseFloat(val)||0;
   };
 
-  window.doAbschluss=async function(ds,silent){
-    const empId=ds.eid;
-    const nettoH=parseFloat(ds.netto);
-    const sollH=parseFloat(ds.soll);
-    const manualBilled=window._manualBilled[ds.key]||0;
-    const newBalance=Math.round((nettoH-manualBilled)*10)/10;
-    const emp=employees.find(function(e){return e.id===empId;});
-    if(!emp) return false;
-    const to=new Date(billTo);
-    const year=to.getFullYear(), month=to.getMonth()+1;
-    if(!silent){
-      const confirmMsg='Abschluss für '+emp.name+'? Gearbeitet: '+nettoH+'h | Abgerechnet: '+manualBilled+'h | Neuer Kontostand: '+(newBalance>=0?'+':'')+newBalance+'h';
-      if(!confirm(confirmMsg)) return false;
-    }
-    const statusEl=document.getElementById('status-'+empId);
-    if(statusEl) statusEl.innerHTML='<span style="color:var(--s400)">⏳ Wird gespeichert…</span>';
-    const {error}=await sb.from('time_accounts').upsert({
-      employee_id:empId,year,month,
-      hours_target:sollH,hours_worked:nettoH,
-      hours_paid_out:manualBilled,balance:newBalance
-    },{onConflict:'employee_id,year,month'});
-    if(error){
-      if(statusEl) statusEl.innerHTML='<span style="color:var(--r600)">❌ Fehler: '+error.message+'</span>';
-      return false;
-    }
-    if(statusEl) statusEl.innerHTML='<span style="color:var(--g600)">✅ Gebucht – '+new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr</span>';
-    const card=document.getElementById('card-'+empId);
-    if(card){card.style.borderColor='var(--g400)';card.style.background='var(--g50)';}
-    return true;
+  window.refreshBilling=function(){
+    billFrom=window._billFrom||billFrom;
+    billTo=window._billTo||billTo;
+    if(billFrom&&billTo&&billFrom<billTo) renderPage();
   };
 
-  window.bucheAlle=async function(){
-    if(!window._empData||!window._empData.length){alert('Keine Daten geladen.');return;}
-    const statusEl=document.getElementById('alle-status');
-    if(statusEl) statusEl.innerHTML='<span style="color:var(--s500)">⏳ Alle werden gebucht…</span>';
-    let ok=0, err=0;
-    for(const d of window._empData){
-      const ds={eid:d.emp.id,netto:d.nettoH,soll:d.monthlyH,key:d.manualKey};
-      const result=await window.doAbschluss(ds,true);
-      if(result) ok++; else err++;
-    }
-    if(statusEl){
-      statusEl.innerHTML=ok>0
-        ?'<span style="color:var(--g600)">✅ '+ok+' Abschlüsse gespeichert'+(err>0?' · <span style="color:var(--r600)">'+err+' Fehler</span>':'')+'</span>'
-        :'<span style="color:var(--r600)">❌ Fehler beim Buchen</span>';
-    }
-  };
-
-  window.exportAbrechnung=function(){
-    const fromLabel=new Date(billFrom).toLocaleDateString('de-DE');
-    const toLabel=new Date(billTo).toLocaleDateString('de-DE');
-    const rows=[
-      ['RoFru-Arbeitszeitplaner – Abrechnung'],
-      ['Zeitraum: '+fromLabel+' – '+toLabel],
-      ['Erstellt: '+new Date().toLocaleDateString('de-DE')],
-      [],
-      ['Mitarbeiter','Abteilung','Gearbeitete Stunden','Sollstunden','Abgerechnete Stunden']
-    ];
-    employees.forEach(function(emp){
-      const nettoH=calcNetto(emp,billFrom,billTo);
-      const monthlyH=Math.round((emp.weekly_hours||0)*52/12*10)/10;
-      const manualKey=emp.id+'_'+billFrom+'_'+billTo;
-      const manualBilled=window._manualBilled[manualKey]||'';
-      rows.push([emp.name,emp.department||'',nettoH,monthlyH,manualBilled]);
-    });
-
-    // Use SheetJS for formatted xlsx
-    const wb=XLSX.utils.book_new();
-    const ws=XLSX.utils.aoa_to_sheet(rows);
-    ws['!cols']=[{wch:24},{wch:18},{wch:20},{wch:14},{wch:22}];
-    ws['!merges']=[
-      {s:{r:0,c:0},e:{r:0,c:4}},
-      {s:{r:1,c:0},e:{r:1,c:4}},
-      {s:{r:2,c:0},e:{r:2,c:4}}
-    ];
-    XLSX.utils.book_append_sheet(wb,ws,'Abrechnung');
-    const wbout=XLSX.write(wb,{bookType:'xlsx',type:'array'});
-    const blob=new Blob([wbout],{type:'application/octet-stream'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download='Abrechnung_'+billFrom+'_'+billTo+'.xlsx';
-    a.click();
-    URL.revokeObjectURL(url);
+  window.updateKontoAfterBilling=function(empId,val,key){
+    window._manualBilled[key]=parseFloat(val)||0;
   };
 
   window.openAccountAdjust=function(preEmpId){
     const empOptions=employees.map(function(e){
       return '<option value="'+e.id+'"'+(e.id===preEmpId?' selected':'')+'>'+e.name+'</option>';
     }).join('');
-
     document.getElementById('modal-container').innerHTML=
       '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-      +'<div class="modal">'
-      +'<div class="modal-title">✏️ Zeitkonto anpassen</div>'
-
-      // Tab buttons
+      +'<div class="modal"><div class="modal-title">&#9999; Zeitkonto anpassen</div>'
       +'<div style="display:flex;gap:8px;margin-bottom:16px">'
       +'<button id="tab-set" class="btn-sm btn-green" data-show="adj-tab-set-panel" data-hide="adj-tab-diff-panel" onclick="showAdjTab(this)" style="flex:1">Kontostand setzen</button>'
       +'<button id="tab-diff" class="btn-sm btn-outline" data-show="adj-tab-diff-panel" data-hide="adj-tab-set-panel" onclick="showAdjTab(this)" style="flex:1">Differenz buchen</button>'
       +'</div>'
-
-      // Tab: set balance directly
       +'<div id="adj-tab-set-panel">'
-      +'<p style="font-size:13px;color:var(--s500);margin-bottom:12px">Setzt den Kontostand direkt auf den eingegebenen Wert.</p>'
-      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
-      +'<select class="form-select" id="adj-emp-set">'+empOptions+'</select></div>'
-      +'<div class="form-group"><label class="form-label">Neuer Kontostand (Stunden)</label>'
-      +'<input class="form-input" type="number" step="0.25" id="adj-balance-set" placeholder="z.B. 5.5 oder -2.0"></div>'
-      +'<div class="form-group"><label class="form-label">Grund</label>'
-      +'<input class="form-input" id="adj-reason-set" placeholder="z.B. Startsaldo, Korrektur…"></div>'
-      +'<div class="modal-footer">'
-      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
-      +'<button class="btn-sm btn-green" onclick="saveBalanceSet()">Kontostand setzen</button>'
-      +'</div></div>'
-
-      // Tab: add/subtract
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label><select class="form-select" id="adj-emp-set">'+empOptions+'</select></div>'
+      +'<div class="form-group"><label class="form-label">Neuer Kontostand (h)</label><input class="form-input" type="number" step="0.25" id="adj-balance-set" placeholder="z.B. 5.5 oder -2"></div>'
+      +'<div class="form-group"><label class="form-label">Grund</label><input class="form-input" id="adj-reason-set" placeholder="Korrektur..."></div>'
+      +'<div class="modal-footer"><button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-sm btn-green" onclick="saveBalanceSet()">Setzen</button></div>'
+      +'</div>'
       +'<div id="adj-tab-diff-panel" style="display:none">'
-      +'<p style="font-size:13px;color:var(--s500);margin-bottom:12px">Addiert oder subtrahiert Stunden vom aktuellen Kontostand.</p>'
-      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
-      +'<select class="form-select" id="adj-emp-diff">'+empOptions+'</select></div>'
-      +'<div class="form-group"><label class="form-label">Stunden (+ oder -)</label>'
-      +'<input class="form-input" type="number" step="0.25" id="adj-hours-diff" placeholder="z.B. -8 (Abbau) oder +4 (Gutschrift)"></div>'
-      +'<div class="form-group"><label class="form-label">Grund</label>'
-      +'<input class="form-input" id="adj-reason-diff" placeholder="z.B. Überstunden abgefeiert, Auszahlung…"></div>'
-      +'<div class="modal-footer">'
-      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
-      +'<button class="btn-sm btn-green" onclick="saveDiffAdjust()">Buchen</button>'
-      +'</div></div>'
-
-      +'</div></div>';
-
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label><select class="form-select" id="adj-emp-diff">'+empOptions+'</select></div>'
+      +'<div class="form-group"><label class="form-label">Stunden (+ oder -)</label><input class="form-input" type="number" step="0.25" id="adj-hours-diff" placeholder="z.B. -8 oder +4"></div>'
+      +'<div class="form-group"><label class="form-label">Grund</label><input class="form-input" id="adj-reason-diff" placeholder="Überstunden abgefeiert..."></div>'
+      +'<div class="modal-footer"><button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-sm btn-green" onclick="saveDiffAdjust()">Buchen</button></div>'
+      +'</div></div></div>';
     window.showAdjTab=function(btn){
       document.getElementById(btn.dataset.show).style.display='block';
       document.getElementById(btn.dataset.hide).style.display='none';
       btn.className='btn-sm btn-green';
       btn.parentElement.querySelectorAll('.btn-sm').forEach(function(b){if(b!==btn)b.className='btn-sm btn-outline';});
     };
-
-    // Save: set balance directly by creating a time_accounts entry
     window.saveBalanceSet=async function(){
       const empId=document.getElementById('adj-emp-set').value;
       const balance=parseFloat(document.getElementById('adj-balance-set').value);
       const reason=document.getElementById('adj-reason-set').value.trim();
-      if(isNaN(balance)||!reason){alert('Bitte alle Felder ausfüllen.');return;}
+      if(isNaN(balance)||!reason){alert('Bitte alle Felder.');return;}
       const emp=employees.find(function(e){return e.id===empId;});
       const monthlyH=emp?Math.round((emp.weekly_hours||0)*52/12*10)/10:0;
       const now2=new Date();
-      const year=now2.getFullYear(), month=now2.getMonth()+1;
-      // Upsert a time_accounts entry that sets the balance
-      const {error}=await sb.from('time_accounts').upsert({
-        employee_id:empId,
-        year:year,
-        month:month,
-        hours_target:monthlyH,
-        hours_worked:monthlyH+balance,
-        hours_paid_out:0,
-        balance:balance
-      },{onConflict:'employee_id,year,month'});
-      if(error){alert('Fehler: '+error.message);return;}
+      await sb.from('time_accounts').upsert({employee_id:empId,year:now2.getFullYear(),month:now2.getMonth()+1,hours_target:monthlyH,hours_worked:monthlyH+balance,hours_paid_out:0,balance},{onConflict:'employee_id,year,month'});
       closeModal(); renderTimeAccounts();
     };
-
-    // Save: add/subtract from current balance
     window.saveDiffAdjust=async function(){
       const empId=document.getElementById('adj-emp-diff').value;
       const hours=parseFloat(document.getElementById('adj-hours-diff').value);
       const reason=document.getElementById('adj-reason-diff').value.trim();
-      if(isNaN(hours)||!reason){alert('Bitte alle Felder ausfüllen.');return;}
-      // Save as account_adjustment
-      const {error}=await sb.from('account_adjustments').insert({
-        employee_id:empId,
-        date:todayStr,
-        hours:hours,
-        reason:reason,
-        created_by:currentUser.id
-      });
-      if(error){alert('Fehler: '+error.message);return;}
-      // Also update the latest time_accounts entry balance
-      const empAccs=accounts.filter(function(a){return a.employee_id===empId;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
-      if(empAccs.length>0){
-        const latest=empAccs[0];
-        const newBalance=Math.round((latest.balance+hours)*10)/10;
-        await sb.from('time_accounts').update({balance:newBalance})
-          .eq('employee_id',empId).eq('year',latest.year).eq('month',latest.month);
-      }
+      if(isNaN(hours)||!reason){alert('Bitte alle Felder.');return;}
+      await sb.from('account_adjustments').insert({employee_id:empId,date:todayStr,hours,reason,created_by:currentUser.id});
       closeModal(); renderTimeAccounts();
     };
   };
 }
-
 
 async function renderSettings(){
   document.getElementById('page-content').innerHTML=
@@ -2727,6 +2596,11 @@ function exportAbrechnungPDF(){
 
 
 // ── BILLING GLOBAL FUNCTIONS ──────────────────────────────────────────────────
+function doAbschlussBtn(btn){
+  doAbschluss({eid:btn.dataset.eid, netto:parseFloat(btn.dataset.netto), soll:parseFloat(btn.dataset.soll)}, false);
+}
+
+
 async function doAbschluss(ds, silent){
   const empId=ds.eid;
   const nettoH=parseFloat(ds.netto);
