@@ -618,17 +618,20 @@ async function renderDashboard(){
   let profileMap={};
   employees.forEach(p=>{ profileMap[p.id]=p; });
 
-  // Check if monthly close is due (after 15th, check if last period was closed)
+  // Check if monthly close is due – based on 15-15 billing period
   const now2=new Date();
-  const isAfter15=now2.getDate()>=15;
-  const prevM=now2.getMonth()===0?12:now2.getMonth();
-  const prevY=now2.getMonth()===0?now2.getFullYear()-1:now2.getFullYear();
+  const curM2=now2.getMonth()+1, curY2=now2.getFullYear();
+  // Billing period: 15th prev month to 15th this month
+  // A close is "due" if we're past the 15th and no account entry exists for this month
+  const isAfter15=now2.getDate()>15;
   const [accCheckRes]=await Promise.all([
-    sb.from('time_accounts').select('employee_id').eq('year',prevY).eq('month',prevM)
+    sb.from('time_accounts').select('employee_id').eq('year',curY2).eq('month',curM2)
   ]);
   const closedEmps=new Set((accCheckRes.data||[]).map(a=>a.employee_id));
   const acctEmployees=employees.filter(e=>e.employee_type==='account');
   const pendingClose=isAfter15&&acctEmployees.filter(e=>!closedEmps.has(e.id));
+  const prevM=curM2===1?12:curM2-1;
+  const prevY=curM2===1?curY2-1:curY2;
 
   document.getElementById('page-content').innerHTML=`
     <div class="page-header">
@@ -2058,19 +2061,17 @@ async function renderTimeAccounts(){
           +(empAccs.length>0
             ?'<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--s400);padding:4px 0">Abrechnungshistorie ('+empAccs.length+')</summary>'
             +'<table style="margin-top:6px"><thead><tr><th>Monat</th><th>Gearbeitet</th><th>Abgerechnet</th><th>Saldo</th><th></th></tr></thead><tbody>'
-            +empAccs.map(function(a){
-              return '<tr>'
-                +'<td>'+MONTHS[a.month-1]+' '+a.year+'</td>'
-                +'<td class="text-mono"><input type="number" step="0.25" value="'+Math.round(a.hours_worked*10)/10+'" data-id="'+a.id+'" data-field="hours_worked" style="width:60px;border:1px solid var(--s200);border-radius:4px;padding:2px 4px;font-family:var(--mono);font-size:12px" onchange="updateAccEntry(this)">h</td>'
-                +'<td class="text-mono"><input type="number" step="0.25" value="'+a.hours_paid_out+'" data-id="'+a.id+'" data-field="hours_paid_out" style="width:60px;border:1px solid var(--s200);border-radius:4px;padding:2px 4px;font-family:var(--mono);font-size:12px" onchange="updateAccEntry(this)">h</td>'
+            +empAccs.map(function(a,idx){
+              const isLatest=idx===0;
+              return '<tr style="'+(isLatest?'background:var(--g50)':'')+'">'
+                +'<td>'+(isLatest?'<strong>':'')+'&#128197; '+MONTHS[a.month-1]+' '+a.year+(isLatest?' <span style="font-size:10px;background:var(--g200);color:var(--g800);padding:1px 5px;border-radius:4px;margin-left:4px">Letzte</span>':'')+(isLatest?'</strong>':'')+'</td>'
+                +'<td class="text-mono">'+Math.round(a.hours_worked*10)/10+'h</td>'
+                +'<td class="text-mono">'+a.hours_paid_out+'h</td>'
                 +'<td class="text-mono" style="font-weight:600;color:'+(a.balance>=0?'var(--g600)':'var(--r600)')+'">'+( a.balance>=0?'+':'')+Math.round(a.balance*10)/10+'h</td>'
-                +'<td style="display:flex;gap:4px">'
-                +'<button class="btn-sm" style="font-size:10px;padding:3px 7px;background:var(--s100);border:1px solid var(--s200);border-radius:4px;cursor:pointer" data-id="'+a.id+'" onclick="recalcBalance(this.dataset.id)">&#8635;</button>'
-                +'<button class="btn-sm btn-red" style="font-size:10px;padding:3px 7px" data-id="'+a.id+'" data-name="'+MONTHS[a.month-1]+' '+a.year+'" onclick="deleteAccEntry(this.dataset.id,this.dataset.name)">&#10005;</button>'
-                +'</td></tr>';
+                +'<td><button class="btn-sm btn-red" style="font-size:10px;padding:3px 7px" data-id="'+a.id+'" data-name="'+MONTHS[a.month-1]+' '+a.year+'" onclick="deleteAccEntry(this.dataset.id,this.dataset.name)">&#10005;</button></td>'
+                +'</tr>';
             }).join('')
             +'</tbody></table>'
-            +'<div style="font-size:11px;color:var(--s400);margin-top:6px">&#8635; = Saldo neu berechnen nach Wert&auml;nderung</div>'
             +'</details>'
             :'')
           +'</div>';
