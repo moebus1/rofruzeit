@@ -1887,36 +1887,34 @@ async function renderMyTimeAccount(){
   const adjTotal=adjustments.reduce(function(s,a){return s+a.hours;},0);
   const kontostand=Math.round(((latestAcc?latestAcc.balance:0)+adjTotal)*10)/10;
 
+  // Kontostand = nur letzter Abschluss (zum 15.), KEINE laufende Berechnung
+  const latestBalance=latestAcc?Math.round(latestAcc.balance*10)/10:null;
+  const latestLabel=latestAcc?MONTHS[latestAcc.month-1]+' '+latestAcc.year:null;
+
   document.getElementById('page-content').innerHTML=
     '<div class="page-header"><div class="page-title">Mein Zeitkonto</div>'
-    +'<div class="page-sub">Abrechnungszeitraum: '+new Date(periodFrom).toLocaleDateString('de-DE')+' – '+now.toLocaleDateString('de-DE')+'</div></div>'
+    +'<div class="page-sub">'+(latestAcc?'Stand nach Abrechnung '+latestLabel:'Noch kein Abschluss vorhanden')+'</div></div>'
     +'<div class="stat-grid">'
     +'<div class="stat-card"><div class="stat-label">Wochensoll</div><div class="stat-value text-mono">'+weeklyH+'h</div></div>'
     +'<div class="stat-card"><div class="stat-label">Monatssoll</div><div class="stat-value text-mono">'+monthlyH+'h</div></div>'
-    +'<div class="stat-card"><div class="stat-label">Netto diese Periode</div><div class="stat-value text-mono" style="color:var(--g700)">'+nettoH+'h</div></div>'
-    +'<div class="stat-card"><div class="stat-label">Kontostand</div><div class="stat-value text-mono" style="color:'+(kontostand>=0?'var(--g600)':'var(--r600)')+'">'+( kontostand>=0?'+':'')+kontostand+'h</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Zeitkontostand</div>'
+    +'<div class="stat-value text-mono" style="color:'+(latestBalance===null?'var(--s400)':latestBalance>=0?'var(--g600)':'var(--r600)')+'">'+( latestBalance===null?'—':((latestBalance>=0?'+':'')+latestBalance+'h'))+'</div>'
+    +'<div style="font-size:10px;color:var(--s400);margin-top:2px">'+(latestLabel?'nach '+latestLabel:'noch kein Abschluss')+'</div>'
+    +'</div>'
     +'</div>'
     +'<div class="card"><div class="card-title">📊 Abrechnungshistorie</div>'
-    +(accounts.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Abschlüsse vorhanden.</p>'
-    :'<table><thead><tr><th>Monat</th><th>Gearbeitet</th><th>Ausgezahlt</th><th>Saldo</th></tr></thead><tbody>'
-    +accounts.map(function(a){
-      return '<tr>'
-        +'<td>'+MONTHS[a.month-1]+' '+a.year+'</td>'
-        +'<td class="text-mono">'+Math.round(a.hours_worked*10)/10+'h</td>'
-        +'<td class="text-mono">'+a.hours_paid_out+'h</td>'
-        +'<td class="text-mono" style="font-weight:600;color:'+(a.balance>=0?'var(--g600)':'var(--r600)')+'">'+( a.balance>=0?'+':'')+Math.round(a.balance*10)/10+'h</td>'
-        +'</tr>';
-    }).join('')+'</tbody></table>')
-    +(adjustments.length>0?'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--s100)">'
-    +'<div style="font-size:12px;font-weight:600;color:var(--s500);margin-bottom:6px">Manuelle Anpassungen</div>'
-    +'<table><thead><tr><th>Datum</th><th>Stunden</th><th>Grund</th></tr></thead><tbody>'
-    +adjustments.map(function(a){
-      return '<tr>'
-        +'<td>'+new Date(a.date).toLocaleDateString('de-DE')+'</td>'
-        +'<td class="text-mono" style="color:'+(a.hours>=0?'var(--g600)':'var(--r600)')+'">'+( a.hours>=0?'+':'')+a.hours+'h</td>'
-        +'<td style="font-size:12px;color:var(--s500)">'+a.reason+'</td>'
-        +'</tr>';
-    }).join('')+'</tbody></table></div>':'')
+    +(accounts.length===0
+      ?'<p style="color:var(--s400);font-size:13px">Noch keine Abschlüsse vorhanden.</p>'
+      :'<table><thead><tr><th>Monat</th><th>Gearbeitet</th><th>Abgerechnet</th><th>Saldo</th></tr></thead><tbody>'
+      +accounts.map(function(a,idx){
+        const isLatest=idx===0;
+        return '<tr style="'+(isLatest?'background:var(--g50)':'')+'">'
+          +'<td>'+(isLatest?'<strong>':'')+'&#128197; '+MONTHS[a.month-1]+' '+a.year+(isLatest?' <span style="font-size:10px;background:var(--g200);color:var(--g800);padding:1px 5px;border-radius:4px">Letzte</span>':'')+(isLatest?'</strong>':'')+'</td>'
+          +'<td class="text-mono">'+Math.round(a.hours_worked*10)/10+'h</td>'
+          +'<td class="text-mono">'+a.hours_paid_out+'h</td>'
+          +'<td class="text-mono" style="font-weight:600;color:'+(a.balance>=0?'var(--g600)':'var(--r600)')+'">'+( a.balance>=0?'+':'')+Math.round(a.balance*10)/10+'h</td>'
+          +'</tr>';
+      }).join('')+'</tbody></table>')
     +'</div>';
 }
 
