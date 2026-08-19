@@ -2101,30 +2101,52 @@ async function renderTimeAccounts(){
     window._manualBilled[key]=parseFloat(val)||0;
   };
 
-  window.doAbschluss=async function(ds){
+  window.doAbschluss=async function(ds,silent){
     const empId=ds.eid;
     const nettoH=parseFloat(ds.netto);
     const sollH=parseFloat(ds.soll);
     const manualBilled=window._manualBilled[ds.key]||0;
     const newBalance=Math.round((nettoH-manualBilled)*10)/10;
     const emp=employees.find(function(e){return e.id===empId;});
-    if(!emp){alert('Mitarbeiter nicht gefunden.');return;}
+    if(!emp) return false;
     const to=new Date(billTo);
     const year=to.getFullYear(), month=to.getMonth()+1;
-    const confirmMsg='Abschluss für '+emp.name+'? Gearbeitet: '+nettoH+'h | Abgerechnet: '+manualBilled+'h | Neuer Kontostand: '+(newBalance>=0?'+':'')+newBalance+'h';
-    if(!confirm(confirmMsg)) return;
+    if(!silent){
+      const confirmMsg='Abschluss für '+emp.name+'? Gearbeitet: '+nettoH+'h | Abgerechnet: '+manualBilled+'h | Neuer Kontostand: '+(newBalance>=0?'+':'')+newBalance+'h';
+      if(!confirm(confirmMsg)) return false;
+    }
+    const statusEl=document.getElementById('status-'+empId);
+    if(statusEl) statusEl.innerHTML='<span style="color:var(--s400)">⏳ Wird gespeichert…</span>';
     const {error}=await sb.from('time_accounts').upsert({
       employee_id:empId,year,month,
-      hours_target:sollH,
-      hours_worked:nettoH,
-      hours_paid_out:manualBilled,
-      balance:newBalance
+      hours_target:sollH,hours_worked:nettoH,
+      hours_paid_out:manualBilled,balance:newBalance
     },{onConflict:'employee_id,year,month'});
-    if(error){alert('Fehler: '+error.message);return;}
-    // Update local accounts
-    accounts.push({employee_id:empId,year,month,hours_target:sollH,hours_worked:nettoH,hours_paid_out:manualBilled,balance:newBalance});
-    alert('✅ Abschluss gespeichert!');
-    renderTimeAccounts();
+    if(error){
+      if(statusEl) statusEl.innerHTML='<span style="color:var(--r600)">❌ Fehler: '+error.message+'</span>';
+      return false;
+    }
+    if(statusEl) statusEl.innerHTML='<span style="color:var(--g600)">✅ Gebucht – '+new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr</span>';
+    const card=document.getElementById('card-'+empId);
+    if(card){card.style.borderColor='var(--g400)';card.style.background='var(--g50)';}
+    return true;
+  };
+
+  window.bucheAlle=async function(){
+    if(!window._empData||!window._empData.length){alert('Keine Daten geladen.');return;}
+    const statusEl=document.getElementById('alle-status');
+    if(statusEl) statusEl.innerHTML='<span style="color:var(--s500)">⏳ Alle werden gebucht…</span>';
+    let ok=0, err=0;
+    for(const d of window._empData){
+      const ds={eid:d.emp.id,netto:d.nettoH,soll:d.monthlyH,key:d.manualKey};
+      const result=await window.doAbschluss(ds,true);
+      if(result) ok++; else err++;
+    }
+    if(statusEl){
+      statusEl.innerHTML=ok>0
+        ?'<span style="color:var(--g600)">✅ '+ok+' Abschlüsse gespeichert'+(err>0?' · <span style="color:var(--r600)">'+err+' Fehler</span>':'')+'</span>'
+        :'<span style="color:var(--r600)">❌ Fehler beim Buchen</span>';
+    }
   };
 
   window.exportAbrechnung=function(){
@@ -2702,6 +2724,33 @@ function exportAbrechnungPDF(){
   doc.text('Seite 1',pageW-14,finalY,{align:'right'});
 
   doc.save('Abrechnung_'+(window._billFrom||'')+'_'+(window._billTo||'')+'.pdf');
+}
+
+
+// ── HISTORY ENTRY MANAGEMENT ──────────────────────────────────────────────────
+async function updateAccEntry(input){
+  const id=input.dataset.id;
+  const field=input.dataset.field;
+  const val=parseFloat(input.value)||0;
+  const {error}=await sb.from('time_accounts').update({[field]:val}).eq('id',id);
+  if(error){alert('Fehler: '+error.message);return;}
+  input.style.borderColor='var(--g400)';
+  setTimeout(function(){input.style.borderColor='var(--s200)';},1500);
+}
+
+async function recalcBalance(id){
+  const {data,error}=await sb.from('time_accounts').select('*').eq('id',id).single();
+  if(error||!data){alert('Eintrag nicht gefunden.');return;}
+  const newBalance=Math.round((data.hours_worked-data.hours_paid_out)*10)/10;
+  await sb.from('time_accounts').update({balance:newBalance}).eq('id',id);
+  renderTimeAccounts();
+}
+
+async function deleteAccEntry(id,label){
+  if(!confirm('Abrechnungseintrag "'+label+'" wirklich löschen? Der Kontostand wird zurückgesetzt.')) return;
+  const {error}=await sb.from('time_accounts').delete().eq('id',id);
+  if(error){alert('Fehler: '+error.message);return;}
+  renderTimeAccounts();
 }
 
 
