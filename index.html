@@ -2596,26 +2596,32 @@ function exportAbrechnungPDF(){
 
 
 // ── BILLING GLOBAL FUNCTIONS ──────────────────────────────────────────────────
+function showConfirmModal(msg, onOk){
+  document.getElementById('modal-container').innerHTML=
+    '<div class="modal-bg">'
+    +'<div class="modal" style="max-width:340px">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--s800);margin-bottom:20px">'+msg+'</div>'
+    +'<div class="modal-footer">'
+    +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+    +'<button class="btn-sm btn-red" onclick="closeModal();('+onOk.toString()+')()">Löschen</button>'
+    +'</div></div></div>';
+}
+
+
 function doAbschlussBtn(btn){
   doAbschluss({eid:btn.dataset.eid, netto:parseFloat(btn.dataset.netto), soll:parseFloat(btn.dataset.soll)}, false);
 }
 
 
-async function doAbschluss(ds, silent){
-  const empId=ds.eid;
-  const nettoH=parseFloat(ds.netto);
-  const sollH=parseFloat(ds.soll);
+async function _execAbschluss(empId, nettoH, sollH){
   const manualInput=document.getElementById('manual-'+empId);
   const manualBilled=manualInput?parseFloat(manualInput.value)||0:0;
   const newBalance=Math.round((nettoH-manualBilled)*10)/10;
   const to=new Date(window._billTo||new Date());
   const year=to.getFullYear(), month=to.getMonth()+1;
-  if(!silent){
-    const name=document.querySelector('#card-'+empId+' [style*="font-weight:700"]')?.textContent||'Mitarbeiter';
-    if(!confirm('Abschluss für '+name+' buchen? Gearbeitet: '+nettoH+'h | Abgerechnet: '+manualBilled+'h | Neuer Kontostand: '+(newBalance>=0?'+':'')+newBalance+'h')) return false;
-  }
   const statusEl=document.getElementById('status-'+empId);
-  if(statusEl) statusEl.innerHTML='<span style="color:var(--s400)">&#9203; Wird gespeichert…</span>';
+  if(statusEl) statusEl.innerHTML='<span style="color:var(--s400)">&#9203; Wird gespeichert...</span>';
+  closeModal();
   const {error}=await sb.from('time_accounts').upsert({
     employee_id:empId,year,month,
     hours_target:sollH,hours_worked:nettoH,
@@ -2625,9 +2631,39 @@ async function doAbschluss(ds, silent){
     if(statusEl) statusEl.innerHTML='<span style="color:var(--r600)">&#10060; Fehler: '+error.message+'</span>';
     return false;
   }
-  if(statusEl) statusEl.innerHTML='<span style="color:var(--g600)">&#9989; Gebucht – '+new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr</span>';
+  if(statusEl) statusEl.innerHTML='<span style="color:var(--g600)">&#9989; Gebucht '+new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr</span>';
   const card=document.getElementById('card-'+empId);
   if(card){card.style.borderColor='var(--g400)';card.style.background='var(--g50)';}
+  return true;
+}
+
+async function doAbschluss(ds, silent){
+  const empId=ds.eid;
+  const nettoH=parseFloat(ds.netto);
+  const sollH=parseFloat(ds.soll);
+  if(silent){
+    return await _execAbschluss(empId, nettoH, sollH);
+  }
+  // Show custom confirm modal instead of confirm()
+  const manualInput=document.getElementById('manual-'+empId);
+  const manualBilled=manualInput?parseFloat(manualInput.value)||0:0;
+  const newBalance=Math.round((nettoH-manualBilled)*10)/10;
+  const nameEl=document.querySelector('#card-'+empId+' div[style*="font-weight:700"]');
+  const name=nameEl?nameEl.textContent:'Mitarbeiter';
+  document.getElementById('modal-container').innerHTML=
+    '<div class="modal-bg">'
+    +'<div class="modal" style="max-width:380px">'
+    +'<div class="modal-title">&#9989; Abschluss buchen</div>'
+    +'<div style="font-size:14px;color:var(--s700);margin-bottom:16px"><strong>'+name+'</strong></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">'
+    +'<div style="background:var(--s50);border-radius:8px;padding:12px"><div style="font-size:11px;color:var(--s400)">Gearbeitet</div><div style="font-family:var(--mono);font-size:20px;font-weight:700">'+nettoH+'h</div></div>'
+    +'<div style="background:var(--s50);border-radius:8px;padding:12px"><div style="font-size:11px;color:var(--s400)">Abzurechnen</div><div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#6d28d9">'+manualBilled+'h</div></div>'
+    +'<div style="background:'+(newBalance>=0?'var(--g50)':'var(--r50)')+';border-radius:8px;padding:12px;grid-column:1/-1"><div style="font-size:11px;color:'+(newBalance>=0?'var(--g700)':'var(--r600)')+'">Neuer Zeitkontostand</div><div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+(newBalance>=0?'var(--g700)':'var(--r600)')+'">'+( newBalance>=0?'+':'')+newBalance+'h</div></div>'
+    +'</div>'
+    +'<div class="modal-footer">'
+    +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+    +'<button class="btn-sm btn-green" data-eid="'+empId+'" data-netto="'+nettoH+'" data-soll="'+sollH+'" onclick="_execAbschluss(this.dataset.eid,parseFloat(this.dataset.netto),parseFloat(this.dataset.soll))">Jetzt buchen</button>'
+    +'</div></div></div>';
   return true;
 }
 
@@ -2670,7 +2706,17 @@ async function recalcBalance(id){
 }
 
 async function deleteAccEntry(id,label){
-  if(!confirm('Abrechnungseintrag "'+label+'" wirklich löschen? Der Kontostand wird zurückgesetzt.')) return;
+  document.getElementById('modal-container').innerHTML=
+    '<div class="modal-bg">'
+    +'<div class="modal" style="max-width:340px">'
+    +'<div style="font-size:15px;font-weight:600;color:var(--s800);margin-bottom:8px">Eintrag löschen?</div>'
+    +'<div style="font-size:13px;color:var(--s500);margin-bottom:20px">'+label+' wird gelöscht. Der Kontostand wird zurückgesetzt.</div>'
+    +'<div class="modal-footer">'
+    +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+    +'<button class="btn-sm btn-red" data-did="'+id+'" onclick="closeModal();_doDeleteAcc(this.dataset.did)">Löschen</button>'
+    +'</div></div></div>';
+}
+async function _doDeleteAcc(id){
   const {error}=await sb.from('time_accounts').delete().eq('id',id);
   if(error){alert('Fehler: '+error.message);return;}
   renderTimeAccounts();
