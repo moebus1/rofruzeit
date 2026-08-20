@@ -2334,7 +2334,23 @@ async function renderEditTimes(){
     const upd={};
     if(field==='duration_minutes') upd[field]=parseInt(val)||0;
     else upd[field]=val||null;
+    // If clock_in or clock_out changed, recalculate duration_minutes
+    if(field==='clock_in'||field==='clock_out'){
+      // Fetch current entry to get both times
+      const {data:entry}=await sb.from('time_entries').select('clock_in,clock_out').eq('id',id).single();
+      if(entry){
+        const ci=field==='clock_in'?val:entry.clock_in;
+        const co=field==='clock_out'?val:entry.clock_out;
+        if(ci&&co){
+          const [h1,m1]=ci.split(':').map(Number);
+          const [h2,m2]=co.split(':').map(Number);
+          const dur=(h2*60+m2)-(h1*60+m1);
+          if(dur>0) upd.duration_minutes=dur;
+        }
+      }
+    }
     await sb.from('time_entries').update(upd).eq('id',id);
+    loadEntries();
   };
   window.deleteEntry=async function(id){
     if(!confirm('Buchung wirklich löschen?')) return;
