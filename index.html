@@ -1545,8 +1545,8 @@ async function renderReports(){
         const end2=new Date(Math.min(new Date(v.date_to),new Date(repTo)));
         while(cur<=end2){const d=cur.getDay();if(d!==0&&d!==6)vacDays++;cur.setDate(cur.getDate()+1);}
       });
-      const dailyH=Math.round((emp.weekly_hours||0)/5*100)/100;
-      const vacMins=Math.round(vacDays*dailyH*60);
+      const dailyMins=(emp.weekly_hours||0)/5*60; // no rounding
+      const vacMins=vacDays*dailyMins;
       const gesamt=netto+vacMins;
       totalBrutto+=brutto; totalPause+=pauseMins; totalNetto+=netto;
       rows+='<tr>'
@@ -1963,10 +1963,11 @@ async function renderTimeAccounts(){
   function calcNetto(emp, from, to){
     const ee=entries.filter(function(e){return e.employee_id===emp.id&&e.date>=from&&e.date<=to;});
     const bb=breaks.filter(function(b){return b.employee_id===emp.id&&b.date>=from&&b.date<=to;});
+    // Work in minutes throughout, round only once at end
     const nettoMins=ee.reduce(function(sum,e){
       return sum+calcNettoMins(e,bb.filter(function(b){return b.date===e.date;}));
     },0);
-    // Vacation credit
+    // Vacation credit in minutes (weekly_hours / 5 days * 60 min, no intermediate rounding)
     const empVac=vacations.filter(function(v){return v.employee_id===emp.id&&v.date_from<=to&&v.date_to>=from;});
     let vacDays=0;
     empVac.forEach(function(v){
@@ -1974,9 +1975,10 @@ async function renderTimeAccounts(){
       const end=new Date(Math.min(new Date(v.date_to),new Date(to)));
       while(cur<=end){const d=cur.getDay();if(d!==0&&d!==6)vacDays++;cur.setDate(cur.getDate()+1);}
     });
-    const dailyH=Math.round((emp.weekly_hours||0)/5*100)/100;
-    const vacH=Math.round(vacDays*dailyH*10)/10;
-    return Math.round((nettoMins/60+vacH)*10)/10;
+    const dailyMins=(emp.weekly_hours||0)/5*60; // exact, no rounding
+    const vacMins=vacDays*dailyMins;
+    const totalMins=nettoMins+vacMins;
+    return Math.round(totalMins/60*100)/100; // round once at end, 2 decimal places
   }
 
   function getKontostand(emp){
