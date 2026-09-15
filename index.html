@@ -1525,7 +1525,7 @@ async function renderReports(){
     // Summary table
     var rows='<div class="card"><table><thead><tr>'
       +'<th>Mitarbeiter</th><th>Abteilung</th><th>Buchungen</th>'
-      +'<th>Brutto-Stunden</th><th>Pause</th><th>Netto-Stunden</th><th>Urlaub</th><th>Gesamt (inkl. Urlaub)</th>'
+      +'<th>Brutto-Stunden</th><th>Pause</th><th>Netto-Stunden</th><th>Urlaub</th><th>Gesamt (inkl. Urlaub)</th><th title="Durchschnittliche Arbeitstage/Woche anhand gestempelter Zeiten">Ø Tage/Wo (ist)</th>'
       +'</tr></thead><tbody>';
     var totalBrutto=0, totalNetto=0, totalPause=0;
     employees.forEach(function(emp){
@@ -1545,10 +1545,18 @@ async function renderReports(){
         const end2=new Date(Math.min(new Date(v.date_to),new Date(repTo)));
         while(cur<=end2){const d=cur.getDay();if(d!==0&&d!==6)vacDays++;cur.setDate(cur.getDate()+1);}
       });
-      const dailyMins=(emp.weekly_hours||0)/5*60; // no rounding
+      const dailyMins=(emp.weekly_hours||0)/(emp.avg_work_days_per_week||5)*60; // use individual setting
       const vacMins=vacDays*dailyMins;
       const gesamt=netto+vacMins;
       totalBrutto+=brutto; totalPause+=pauseMins; totalNetto+=netto;
+      // Calculate actual avg work days per week from stamped entries
+      const periodDays=Math.max(1,Math.round((new Date(repTo)-new Date(repFrom))/86400000)+1);
+      const periodWeeks=periodDays/7;
+      // Count unique work days
+      const uniqueDays=new Set(ee.map(function(e){return e.date;})).size;
+      const avgDaysActual=periodWeeks>0?Math.round(uniqueDays/periodWeeks*10)/10:0;
+      const configuredDays=emp.avg_work_days_per_week||5;
+      const diffDays=Math.round((avgDaysActual-configuredDays)*10)/10;
       rows+='<tr>'
         +'<td><strong>'+emp.name+'</strong></td>'
         +'<td>'+( emp.department||'—')+'</td>'
@@ -1558,6 +1566,9 @@ async function renderReports(){
         +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netto)+'</strong></td>'
         +'<td class="text-mono" style="color:#7c3aed">'+(vacMins>0?'+'+fmtMins(vacMins):'—')+'</td>'
         +'<td class="text-mono"><strong style="color:var(--g800)">'+fmtMins(gesamt)+'</strong></td>'
+        +'<td class="text-mono" style="color:'+(Math.abs(diffDays)>0.5?'var(--a600)':'var(--s600)')
+        +'" title="Eingestellt: '+configuredDays+' Tage/Wo">'+avgDaysActual
+        +(Math.abs(diffDays)>0.5?' <span style="font-size:10px">(Soll: '+configuredDays+')</span>':'')+'</td>'
         +'</tr>';
     });
     rows+='<tr style="background:var(--g50)">'
@@ -1620,8 +1631,8 @@ async function renderUsers(){
           +'<td class="text-mono">'+used+' Tage</td>'
           +'<td class="text-mono" style="font-weight:600;color:'+(rest>5?'var(--g600)':rest>0?'var(--a600)':'var(--r600)')+'">'+rest+' Tage</td>'
           +'<td><button class="btn-sm btn-outline" style="font-size:12px"'
-          +' data-id="'+u.id+'" data-name="'+u.name.replace(/"/g,'&quot;')+'" data-dept="'+(u.department||'')+'" data-type="'+(u.employee_type||'minijob')+'" data-wh="'+(u.weekly_hours||0)+'" data-vac="'+(u.vacation_days_per_year||0)+'"'
-          +' onclick="openEditEmployee(this.dataset.id,this.dataset.name,this.dataset.dept,this.dataset.type,parseFloat(this.dataset.wh),parseInt(this.dataset.vac))">✏️</button></td>'
+          +' data-id="'+u.id+'" data-name="'+u.name.replace(/"/g,'&quot;')+'" data-dept="'+(u.department||'')+'" data-type="'+(u.employee_type||'minijob')+'" data-wh="'+(u.weekly_hours||0)+'" data-vac="'+(u.vacation_days_per_year||0)+'" data-avg="'+(u.avg_work_days_per_week||5)+'"'
+          +' onclick="openEditEmployee(this.dataset.id,this.dataset.name,this.dataset.dept,this.dataset.type,parseFloat(this.dataset.wh),parseInt(this.dataset.vac),parseFloat(this.dataset.avg))">✏️</button></td>'
           +'</tr>';
       }).join('')}
       </tbody></table>
@@ -1975,7 +1986,7 @@ async function renderTimeAccounts(){
       const end=new Date(Math.min(new Date(v.date_to),new Date(to)));
       while(cur<=end){const d=cur.getDay();if(d!==0&&d!==6)vacDays++;cur.setDate(cur.getDate()+1);}
     });
-    const dailyMins=(emp.weekly_hours||0)/5*60; // exact, no rounding
+    const dailyMins=(emp.weekly_hours||0)/(emp.avg_work_days_per_week||5)*60; // use individual setting
     const vacMins=vacDays*dailyMins;
     const totalMins=nettoMins+vacMins;
     return Math.round(totalMins/60*100)/100; // round once at end, 2 decimal places
@@ -2757,9 +2768,15 @@ async function _doDeleteAcc(id){
 
 function goHome(){ navigateTo('dashboard'); }
 function updateMonthlyCalc(v){ const el=document.getElementById('ee-monthly-calc'); if(el) el.textContent=Math.round(parseFloat(v||0)*52/12*10)/10+'h'; }
+function updateVacValue(){
+  const w=parseFloat(document.getElementById('ee-weekly')?.value)||0;
+  const d=parseFloat(document.getElementById('ee-avgdays')?.value)||5;
+  const el=document.getElementById('ee-vac-value');
+  if(el) el.textContent=Math.round(w/d*100)/100+'h';
+}
 function closeModal(){ document.getElementById('modal-container').innerHTML=''; }
 
-function openEditEmployee(id,name,dept,type,weekly,vacation){
+function openEditEmployee(id,name,dept,type,weekly,vacation,avgdays){
   document.getElementById('modal-container').innerHTML=
     '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal">'
@@ -2779,11 +2796,15 @@ function openEditEmployee(id,name,dept,type,weekly,vacation){
       :'<input type="hidden" id="ee-type" value="'+type+'">')
     +'<div id="ee-weekly-wrap" style="display:'+(type==='account'?'block':'none')+'">'
     +'<div class="form-group"><label class="form-label">Wochenstunden</label>'
-    +'<input class="form-input" type="number" step="0.5" id="ee-weekly" value="'+weekly+'" oninput="updateMonthlyCalc(this.value)"></div>'
+    +'<input class="form-input" type="number" step="0.5" id="ee-weekly" value="'+weekly+'" oninput="updateMonthlyCalc(this.value);updateVacValue()"></div>'
     +'<div style="font-size:12px;color:var(--s400);margin-top:-8px;margin-bottom:12px">Monatssoll: <strong id="ee-monthly-calc">'+Math.round(weekly*52/12*10)/10+'h</strong></div>'
     +'</div>'
     +'<div class="form-group"><label class="form-label">Jahresurlaubstage</label>'
     +'<input class="form-input" type="number" id="ee-vacation" value="'+vacation+'"></div>'
+    +'<div class="form-group"><label class="form-label">Durchschnittliche Arbeitstage/Woche</label>'
+    +'<input class="form-input" type="number" step="0.5" id="ee-avgdays" value="'+(avgdays||5)+'" min="1" max="7">'
+    +'<div style="font-size:11px;color:var(--s400);margin-top:3px">Wertigkeit Urlaubstag: <strong id="ee-vac-value">'
+    +Math.round((weekly/(avgdays||5))*100)/100+'h</strong></div></div>'
     +'<div class="modal-footer">'
     +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
     +'<button class="btn-sm btn-green" data-eid="'+id+'" onclick="saveEmployee(this.dataset.eid)">Speichern</button>'
@@ -2798,7 +2819,8 @@ function openEditEmployee(id,name,dept,type,weekly,vacation){
     const type2=document.getElementById('ee-type').value;
     const weekly2=parseFloat(document.getElementById('ee-weekly').value)||0;
     const vac2=parseInt(document.getElementById('ee-vacation').value)||0;
-    await sb.from('profiles').update({name:name2,department:dept2,employee_type:type2,weekly_hours:weekly2,vacation_days_per_year:vac2}).eq('id',empId);
+    const avg2=parseFloat(document.getElementById('ee-avgdays')?.value)||5;
+    await sb.from('profiles').update({name:name2,department:dept2,employee_type:type2,weekly_hours:weekly2,vacation_days_per_year:vac2,avg_work_days_per_week:avg2}).eq('id',empId);
     closeModal(); renderUsers();
   };
 }
