@@ -1480,12 +1480,14 @@ async function renderReports(){
   const defTo=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(getDaysInMonth(now.getFullYear(),now.getMonth()));
   let repFrom=defFrom, repTo=defTo;
 
-  const [empRes,entriesRes,breaksRes]=await Promise.all([
+  const [empRes,entriesRes,breaksRes,vacRes]=await Promise.all([
     sb.from('profiles').select('*').eq('role','employee'),
     sb.from('time_entries').select('*'),
-    sb.from('break_entries').select('*').not('pause_end','is',null)
+    sb.from('break_entries').select('*').not('pause_end','is',null),
+    sb.from('vacation_requests').select('*').eq('status','approved')
   ]);
   const employees=empRes.data||[], entries=entriesRes.data||[], breaks=breaksRes.data||[];
+  const vacations=vacRes.data||[];
 
   function render(){
     const filtered=entries.filter(function(e){return e.date>=repFrom&&e.date<=repTo;});
@@ -1523,7 +1525,7 @@ async function renderReports(){
     // Summary table
     var rows='<div class="card"><table><thead><tr>'
       +'<th>Mitarbeiter</th><th>Abteilung</th><th>Buchungen</th>'
-      +'<th>Brutto-Stunden</th><th>Pause</th><th>Netto-Stunden</th>'
+      +'<th>Brutto-Stunden</th><th>Pause</th><th>Netto-Stunden</th><th>Urlaub</th><th>Gesamt (inkl. Urlaub)</th>'
       +'</tr></thead><tbody>';
     var totalBrutto=0, totalNetto=0, totalPause=0;
     employees.forEach(function(emp){
@@ -1535,6 +1537,17 @@ async function renderReports(){
         const eBreaks=bb.filter(function(b){return b.date===e.date;});
         return sum+calcNettoMins(e,eBreaks);
       },0);
+      // Vacation credit (same logic as billing)
+      const empVac=(vacations||[]).filter(function(v){return v.employee_id===emp.id&&v.date_from<=repTo&&v.date_to>=repFrom;});
+      let vacDays=0;
+      empVac.forEach(function(v){
+        let cur=new Date(Math.max(new Date(v.date_from),new Date(repFrom)));
+        const end2=new Date(Math.min(new Date(v.date_to),new Date(repTo)));
+        while(cur<=end2){const d=cur.getDay();if(d!==0&&d!==6)vacDays++;cur.setDate(cur.getDate()+1);}
+      });
+      const dailyH=Math.round((emp.weekly_hours||0)/5*100)/100;
+      const vacMins=Math.round(vacDays*dailyH*60);
+      const gesamt=netto+vacMins;
       totalBrutto+=brutto; totalPause+=pauseMins; totalNetto+=netto;
       rows+='<tr>'
         +'<td><strong>'+emp.name+'</strong></td>'
@@ -1543,6 +1556,8 @@ async function renderReports(){
         +'<td class="text-mono">'+fmtMins(brutto)+'</td>'
         +'<td class="text-mono" style="color:var(--s400)">'+fmtMins(pauseMins)+'</td>'
         +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netto)+'</strong></td>'
+        +'<td class="text-mono" style="color:#7c3aed">'+(vacMins>0?'+'+fmtMins(vacMins):'—')+'</td>'
+        +'<td class="text-mono"><strong style="color:var(--g800)">'+fmtMins(gesamt)+'</strong></td>'
         +'</tr>';
     });
     rows+='<tr style="background:var(--g50)">'
