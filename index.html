@@ -1910,8 +1910,10 @@ async function renderMyTimeAccount(){
 
   // Latest account balance + adjustments
   const latestAcc=accounts[0];
+  // Kontostand = Summe aller gebuchten Salden (kumulativ über alle Monate)
+  const totalBalance=accounts.reduce(function(sum,a){return sum+(a.balance||0);},0);
   const adjTotal=adjustments.reduce(function(s,a){return s+a.hours;},0);
-  const kontostand=Math.round(((latestAcc?latestAcc.balance:0)+adjTotal)*10)/10;
+  const kontostand=Math.round((totalBalance+adjTotal)*100)/100;
 
   // Kontostand = nur letzter Abschluss (zum 15.), KEINE laufende Berechnung
   const latestBalance=latestAcc?Math.round(latestAcc.balance*10)/10:null;
@@ -1994,10 +1996,10 @@ async function renderTimeAccounts(){
 
   function getKontostand(emp){
     const empAccs=accounts.filter(function(a){return a.employee_id===emp.id;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
-    const latestAcc=empAccs[0];
-    // If no accounts yet, show live calc
-    if(!latestAcc) return {stand:calcNetto(emp,billFrom,billTo)-(emp.weekly_hours||0)*52/12/12*1, empAccs};
-    return {stand:Math.round(latestAcc.balance*10)/10, empAccs};
+    if(!empAccs.length) return {stand:0, empAccs};
+    // Kontostand = Summe aller Salden (kumulativ)
+    const totalBalance=Math.round(empAccs.reduce(function(sum,a){return sum+(a.balance||0);},0)*100)/100;
+    return {stand:totalBalance, empAccs};
   }
 
   function renderPage(){
@@ -2659,7 +2661,12 @@ function doAbschlussBtn(btn){
 async function _execAbschluss(empId, nettoH, sollH){
   const manualInput=document.getElementById('manual-'+empId);
   const manualBilled=manualInput?parseFloat(manualInput.value)||0:0;
-  const newBalance=Math.round((nettoH-manualBilled)*10)/10;
+  // Saldo dieser Periode = gearbeitet - abgerechnet
+  const periodBalance=Math.round((nettoH-manualBilled)*100)/100;
+  // Neuer Kontostand = Summe aller bisherigen Salden + dieser Periode
+  const {data:existingAccs}=await sb.from('time_accounts').select('balance').eq('employee_id',empId);
+  const prevTotal=(existingAccs||[]).reduce(function(s,a){return s+(a.balance||0);},0);
+  const newBalance=Math.round((prevTotal+periodBalance)*100)/100;
   const to=new Date(window._billTo||new Date());
   const year=to.getFullYear(), month=to.getMonth()+1;
   const statusEl=document.getElementById('status-'+empId);
@@ -2701,7 +2708,7 @@ async function doAbschluss(ds, silent){
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">'
     +'<div style="background:var(--s50);border-radius:8px;padding:12px"><div style="font-size:11px;color:var(--s400)">Gearbeitet</div><div style="font-family:var(--mono);font-size:20px;font-weight:700">'+nettoH+'h</div></div>'
     +'<div style="background:var(--s50);border-radius:8px;padding:12px"><div style="font-size:11px;color:var(--s400)">Abzurechnen</div><div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#6d28d9">'+manualBilled+'h</div></div>'
-    +'<div style="background:'+(newBalance>=0?'var(--g50)':'var(--r50)')+';border-radius:8px;padding:12px;grid-column:1/-1"><div style="font-size:11px;color:'+(newBalance>=0?'var(--g700)':'var(--r600)')+'">Neuer Zeitkontostand</div><div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+(newBalance>=0?'var(--g700)':'var(--r600)')+'">'+( newBalance>=0?'+':'')+newBalance+'h</div></div>'
+    +'<div style="background:'+(newBalance>=0?'var(--g50)':'var(--r50)')+';border-radius:8px;padding:12px;grid-column:1/-1"><div style="font-size:11px;color:'+(newBalance>=0?'var(--g700)':'var(--r600)')+'">Neuer kumulierter Kontostand</div><div style="font-family:var(--mono);font-size:24px;font-weight:700;color:'+(newBalance>=0?'var(--g700)':'var(--r600)')+'">'+( newBalance>=0?'+':'')+newBalance+'h</div><div style="font-size:11px;color:var(--s400);margin-top:2px">Periode: '+(periodBalance>=0?'+':'')+Math.round(periodBalance*100)/100+'h</div></div>'
     +'</div>'
     +'<div class="modal-footer">'
     +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
