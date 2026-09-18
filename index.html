@@ -1926,7 +1926,7 @@ async function renderMyTimeAccount(){
     +'<div class="stat-card"><div class="stat-label">Wochensoll</div><div class="stat-value text-mono">'+weeklyH+'h</div></div>'
     +'<div class="stat-card"><div class="stat-label">Monatssoll</div><div class="stat-value text-mono">'+monthlyH+'h</div></div>'
     +'<div class="stat-card"><div class="stat-label">Zeitkontostand</div>'
-    +'<div class="stat-value text-mono" style="color:'+(latestBalance===null?'var(--s400)':latestBalance>=0?'var(--g600)':'var(--r600)')+'">'+( latestBalance===null?'—':((latestBalance>=0?'+':'')+latestBalance+'h'))+'</div>'
+    +'<div class="stat-value text-mono" style="color:'+(accounts.length===0?'var(--s400)':kontostand>=0?'var(--g600)':'var(--r600)')+'">'+( accounts.length===0?'—':((kontostand>=0?'+':'')+kontostand+'h'))+'</div>'
     +'<div style="font-size:10px;color:var(--s400);margin-top:2px">'+(latestLabel?'nach '+latestLabel:'noch kein Abschluss')+'</div>'
     +'</div>'
     +'</div>'
