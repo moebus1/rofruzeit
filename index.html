@@ -1060,46 +1060,64 @@ async function openCalExport(){
 
 // ── MY TIMES ─────────────────────────────────────────────────────────────────
 async function renderMyTimes(){
-  const [entriesRes, breaksRes] = await Promise.all([
+  // Fetch last billing date from time_accounts
+  const [entriesRes, breaksRes, accRes] = await Promise.all([
     sb.from('time_entries').select('*').eq('employee_id',currentUser.id).order('date',{ascending:false}),
-    sb.from('break_entries').select('*').eq('employee_id',currentUser.id)
+    sb.from('break_entries').select('*').eq('employee_id',currentUser.id),
+    sb.from('time_accounts').select('*').eq('employee_id',currentUser.id).order('year',{ascending:false}).order('month',{ascending:false}).limit(1)
   ]);
-  const entries=entriesRes.data||[];
-  const breaks=breaksRes.data||[];
-  const totalBrutto=entries.reduce((a,e)=>a+(e.duration_minutes||0),0);
-  const totalBreak=breaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
+  const allEntries=entriesRes.data||[];
+  const allBreaks=breaksRes.data||[];
+  const lastAcc=(accRes.data||[])[0];
+
+  // Determine "from" date: 15th of last billing month, or beginning of time
+  let fromDate=null;
+  let fromLabel='Alle Zeiten';
+  if(lastAcc){
+    // Last billing was for lastAcc.year/lastAcc.month → period started on 15th of month before
+    const billMonth=lastAcc.month===1?12:lastAcc.month-1;
+    const billYear=lastAcc.month===1?lastAcc.year-1:lastAcc.year;
+    fromDate=billYear+'-'+pad(billMonth)+'-15';
+    fromLabel='seit 15. '+MONTHS[billMonth-1]+' '+billYear+' (letzte Abrechnung: '+MONTHS[lastAcc.month-1]+' '+lastAcc.year+')';
+  }
+
+  const entries=fromDate?allEntries.filter(function(e){return e.date>fromDate;}):allEntries;
+  const breaks=fromDate?allBreaks.filter(function(b){return b.date>fromDate;}):allBreaks;
+
+  const totalBrutto=entries.reduce(function(a,e){return a+(e.duration_minutes||0);},0);
+  const totalBreak=breaks.filter(function(b){return b.pause_end;}).reduce(function(a,b){return a+(b.duration_minutes||0);},0);
   const totalNetto=totalBrutto-totalBreak;
-  document.getElementById('page-content').innerHTML=`
-    <div class="page-header"><div class="page-title">Meine Arbeitszeiten</div><div class="page-sub">Alle erfassten Zeiten</div></div>
-    <div class="stat-grid">
-      <div class="stat-card"><div class="stat-label">Buchungen gesamt</div><div class="stat-value">${entries.length}</div></div>
-      <div class="stat-card"><div class="stat-label">Brutto-Stunden</div><div class="stat-value text-mono">${fmtMins(totalBrutto)}</div></div>
-      <div class="stat-card"><div class="stat-label">Pausen gesamt</div><div class="stat-value text-mono">${fmtMins(totalBreak)}</div></div>
-      <div class="stat-card"><div class="stat-label">Netto-Stunden</div><div class="stat-value text-mono" style="color:var(--g700)">${fmtMins(totalNetto)}</div></div>
-    </div>
-    <div class="card">
-      ${entries.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Einträge.</p>':
-      '<table><thead><tr><th>Datum</th><th>Beginn</th><th>Ende</th><th>Brutto</th><th>Pause</th><th>Netto</th><th>Notiz</th></tr></thead><tbody>'
-      +entries.map(e=>{
-        const dayBreaks=breaks.filter(b=>b.date===e.date);
-        const breakMins=dayBreaks.filter(b=>b.pause_end).reduce((a,b)=>a+(b.duration_minutes||0),0);
-        const netMins=calcNettoMins(e,dayBreaks);
-        const closedBreaks=dayBreaks.filter(b=>b.pause_end);
-        const breakDetail=closedBreaks.length>0
-          ? closedBreaks.map(b=>b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5)).join(', ')
-          : (dayBreaks.find(b=>!b.pause_end)?'läuft…':'—');
-        return '<tr>'
-          +'<td>'+new Date(e.date).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'})+'</td>'
-          +'<td class="text-mono">'+e.clock_in?.slice(0,5)+'</td>'
-          +'<td class="text-mono">'+(e.clock_out?.slice(0,5)||'<span class="badge badge-green">aktiv</span>')+'</td>'
-          +'<td class="text-mono">'+fmtMins(e.duration_minutes||0)+'</td>'
-          +'<td style="font-size:12px;color:var(--s500)">'+breakDetail+'</td>'
-          +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netMins)+'</strong></td>'
-          +'<td style="color:var(--s400);font-size:12px">'+(e.note||'—')+'</td>'
-          +'</tr>';
-      }).join('')
-      +'</tbody></table>'}
-    </div>`;
+
+  document.getElementById('page-content').innerHTML=
+    '<div class="page-header"><div class="page-title">Meine Arbeitszeiten</div>'
+    +'<div class="page-sub">'+fromLabel+'</div></div>'
+    +'<div class="stat-grid">'
+    +'<div class="stat-card"><div class="stat-label">Buchungen</div><div class="stat-value">'+entries.length+'</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Brutto-Stunden</div><div class="stat-value text-mono">'+fmtMins(totalBrutto)+'</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Pausen gesamt</div><div class="stat-value text-mono">'+fmtMins(totalBreak)+'</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Netto-Stunden</div><div class="stat-value text-mono" style="color:var(--g700)">'+fmtMins(totalNetto)+'</div></div>'
+    +'</div>'
+    +'<div class="card">'
+    +(entries.length===0?'<p style="color:var(--s400);font-size:13px">Keine Buchungen seit letzter Abrechnung.</p>'
+    :'<table><thead><tr><th>Datum</th><th>Beginn</th><th>Ende</th><th>Brutto</th><th>Pause</th><th>Netto</th><th>Notiz</th></tr></thead><tbody>'
+    +entries.map(function(e){
+      const dayBreaks=breaks.filter(function(b){return b.date===e.date;});
+      const netMins=calcNettoMins(e,dayBreaks);
+      const closedBreaks=dayBreaks.filter(function(b){return b.pause_end;});
+      const breakDetail=closedBreaks.length>0
+        ? closedBreaks.map(function(b){return b.pause_start.slice(0,5)+'–'+b.pause_end.slice(0,5);}).join(', ')
+        : (dayBreaks.find(function(b){return !b.pause_end;})?'läuft…':'—');
+      return '<tr>'
+        +'<td>'+new Date(e.date).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'})+'</td>'
+        +'<td class="text-mono">'+(e.clock_in?e.clock_in.slice(0,5):'')+'</td>'
+        +'<td class="text-mono">'+(e.clock_out?e.clock_out.slice(0,5):'<span class="badge badge-green">aktiv</span>')+'</td>'
+        +'<td class="text-mono">'+fmtMins(e.duration_minutes||0)+'</td>'
+        +'<td style="font-size:12px;color:var(--s500)">'+breakDetail+'</td>'
+        +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netMins)+'</strong></td>'
+        +'<td style="color:var(--s400);font-size:12px">'+(e.note||'—')+'</td>'
+        +'</tr>';
+    }).join('')+'</tbody></table>')
+    +'</div>';
 }
 
 // ── AVAILABILITY ─────────────────────────────────────────────────────────────
