@@ -1060,45 +1060,85 @@ async function openCalExport(){
 
 // ── MY TIMES ─────────────────────────────────────────────────────────────────
 async function renderMyTimes(){
-  // Fetch last billing date from time_accounts
-  const [entriesRes, breaksRes, accRes] = await Promise.all([
+  // Fetch last billing date, entries, breaks, vacation requests and profile
+  const [entriesRes, breaksRes, accRes, vacRes, profRes] = await Promise.all([
     sb.from('time_entries').select('*').eq('employee_id',currentUser.id).order('date',{ascending:false}),
     sb.from('break_entries').select('*').eq('employee_id',currentUser.id),
-    sb.from('time_accounts').select('*').eq('employee_id',currentUser.id).order('year',{ascending:false}).order('month',{ascending:false}).limit(1)
+    sb.from('time_accounts').select('*').eq('employee_id',currentUser.id).order('year',{ascending:false}).order('month',{ascending:false}).limit(1),
+    sb.from('vacation_requests').select('*').eq('employee_id',currentUser.id).eq('status','approved'),
+    sb.from('profiles').select('weekly_hours,avg_work_days_per_week').eq('id',currentUser.id).maybeSingle()
   ]);
   const allEntries=entriesRes.data||[];
   const allBreaks=breaksRes.data||[];
   const lastAcc=(accRes.data||[])[0];
+  const allVacations=vacRes.data||[];
+  const prof=profRes.data||{};
+  const weeklyH=prof.weekly_hours||0;
+  const avgDays=prof.avg_work_days_per_week||5;
+  // Stundenwert pro Urlaubstag = Wochenstunden / durchschnittliche Arbeitstage/Woche
+  const hoursPerVacDay=avgDays>0?Math.round((weeklyH/avgDays)*100)/100:0;
 
   // Determine "from" date: 15th of last billing month, or beginning of time
   let fromDate=null;
   let fromLabel='Alle Zeiten';
   if(lastAcc){
-    // Last billing = lastAcc.month/year → show from 15th of THAT month
     fromDate=lastAcc.year+'-'+pad(lastAcc.month)+'-15';
     fromLabel='seit 15. '+MONTHS[lastAcc.month-1]+' '+lastAcc.year+' (letzte Abrechnung)';
   }
 
-  const entries=fromDate?allEntries.filter(function(e){return e.date>fromDate;}):allEntries;
-  const breaks=fromDate?allBreaks.filter(function(b){return b.date>fromDate;}):allBreaks;
+  const entries=fromDate?allEntries.filter(function(e){return e.date>=fromDate;}):allEntries;
+  const breaks=fromDate?allBreaks.filter(function(b){return b.date>=fromDate;}):allBreaks;
+
+  // Collect individual vacation days in period
+  const vacDaysInPeriod=[];
+  allVacations.forEach(function(v){
+    let d=new Date(v.date_from);
+    const end=new Date(v.date_to);
+    while(d<=end){
+      const ds=d.toISOString().slice(0,10);
+      if(!fromDate||ds>=fromDate){
+        const dow=d.getDay();
+        if(dow!==0&&dow!==6) vacDaysInPeriod.push({date:ds,requestId:v.id});
+      }
+      d.setDate(d.getDate()+1);
+    }
+  });
+  // Remove vacation days that already have a time_entry (MA stempelte trotz Urlaub)
+  const entryDates=new Set(entries.map(function(e){return e.date;}));
+  const vacOnly=vacDaysInPeriod.filter(function(v){return !entryDates.has(v.date);});
 
   const totalBrutto=entries.reduce(function(a,e){return a+(e.duration_minutes||0);},0);
   const totalBreak=breaks.filter(function(b){return b.pause_end;}).reduce(function(a,b){return a+(b.duration_minutes||0);},0);
   const totalNetto=totalBrutto-totalBreak;
+  const totalVacMins=Math.round(vacOnly.length*hoursPerVacDay*60);
+
+  // Build combined rows: entries + vacation days, sorted by date desc
+  const entryRows=entries.map(function(e){return {type:'work',date:e.date,entry:e};});
+  const vacRows=vacOnly.map(function(v){return {type:'vacation',date:v.date};});
+  const allRows=[].concat(entryRows,vacRows).sort(function(a,b){return b.date.localeCompare(a.date);});
 
   document.getElementById('page-content').innerHTML=
     '<div class="page-header"><div class="page-title">Meine Arbeitszeiten</div>'
     +'<div class="page-sub">'+fromLabel+'</div></div>'
     +'<div class="stat-grid">'
     +'<div class="stat-card"><div class="stat-label">Buchungen</div><div class="stat-value">'+entries.length+'</div></div>'
-    +'<div class="stat-card"><div class="stat-label">Brutto-Stunden</div><div class="stat-value text-mono">'+fmtMins(totalBrutto)+'</div></div>'
-    +'<div class="stat-card"><div class="stat-label">Pausen gesamt</div><div class="stat-value text-mono">'+fmtMins(totalBreak)+'</div></div>'
-    +'<div class="stat-card"><div class="stat-label">Netto-Stunden</div><div class="stat-value text-mono" style="color:var(--g700)">'+fmtMins(totalNetto)+'</div></div>'
+    +'<div class="stat-card"><div class="stat-label">Netto-Arbeit</div><div class="stat-value text-mono" style="color:var(--g700)">'+fmtMins(totalNetto)+'</div></div>'
+    +(vacOnly.length>0?'<div class="stat-card"><div class="stat-label">Urlaubstage</div><div class="stat-value text-mono" style="color:#7c3aed">'+vacOnly.length+' Tag'+(vacOnly.length!==1?'e':'')+'</div><div class="stat-label">= '+fmtMins(totalVacMins)+'</div></div>':'')
+    +'<div class="stat-card"><div class="stat-label">Gesamt (Arbeit+Urlaub)</div><div class="stat-value text-mono" style="color:var(--g700)">'+fmtMins(totalNetto+totalVacMins)+'</div></div>'
     +'</div>'
     +'<div class="card">'
-    +(entries.length===0?'<p style="color:var(--s400);font-size:13px">Keine Buchungen seit letzter Abrechnung.</p>'
+    +(allRows.length===0?'<p style="color:var(--s400);font-size:13px">Keine Buchungen seit letzter Abrechnung.</p>'
     :'<table><thead><tr><th>Datum</th><th>Beginn</th><th>Ende</th><th>Brutto</th><th>Pause</th><th>Netto</th><th>Notiz</th></tr></thead><tbody>'
-    +entries.map(function(e){
+    +allRows.map(function(row){
+      if(row.type==='vacation'){
+        return '<tr style="background:rgba(124,58,237,0.06)">'
+          +'<td>'+new Date(row.date).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'})+'</td>'
+          +'<td colspan="4"><span style="font-size:12px;color:#7c3aed;font-weight:600">🏖️ Urlaub</span></td>'
+          +'<td class="text-mono" style="color:#7c3aed;font-weight:600">'+fmtMins(Math.round(hoursPerVacDay*60))+'</td>'
+          +'<td style="font-size:12px;color:var(--s400)">'+hoursPerVacDay+'h/Tag</td>'
+          +'</tr>';
+      }
+      const e=row.entry;
       const dayBreaks=breaks.filter(function(b){return b.date===e.date;});
       const netMins=calcNettoMins(e,dayBreaks);
       const closedBreaks=dayBreaks.filter(function(b){return b.pause_end;});
