@@ -1074,11 +1074,9 @@ async function renderMyTimes(){
   let fromDate=null;
   let fromLabel='Alle Zeiten';
   if(lastAcc){
-    // Last billing was for lastAcc.year/lastAcc.month → period started on 15th of month before
-    const billMonth=lastAcc.month===1?12:lastAcc.month-1;
-    const billYear=lastAcc.month===1?lastAcc.year-1:lastAcc.year;
-    fromDate=billYear+'-'+pad(billMonth)+'-15';
-    fromLabel='seit 15. '+MONTHS[billMonth-1]+' '+billYear+' (letzte Abrechnung: '+MONTHS[lastAcc.month-1]+' '+lastAcc.year+')';
+    // Last billing = lastAcc.month/year → show from 15th of THAT month
+    fromDate=lastAcc.year+'-'+pad(lastAcc.month)+'-15';
+    fromLabel='seit 15. '+MONTHS[lastAcc.month-1]+' '+lastAcc.year+' (letzte Abrechnung)';
   }
 
   const entries=fromDate?allEntries.filter(function(e){return e.date>fromDate;}):allEntries;
@@ -1928,10 +1926,10 @@ async function renderMyTimeAccount(){
 
   // Latest account balance + adjustments
   const latestAcc=accounts[0];
-  // Kontostand = Summe aller gebuchten Salden (kumulativ über alle Monate)
-  const totalBalance=accounts.reduce(function(sum,a){return sum+(a.balance||0);},0);
+  // Kontostand = neuester Eintrag (kumulativ gespeichert durch _execAbschluss)
+  const latestAccForBalance=accounts[0];
   const adjTotal=adjustments.reduce(function(s,a){return s+a.hours;},0);
-  const kontostand=Math.round((totalBalance+adjTotal)*100)/100;
+  const kontostand=latestAccForBalance?Math.round((latestAccForBalance.balance+adjTotal)*100)/100:0;
 
   // Kontostand = nur letzter Abschluss (zum 15.), KEINE laufende Berechnung
   const latestBalance=latestAcc?Math.round(latestAcc.balance*10)/10:null;
@@ -2015,9 +2013,8 @@ async function renderTimeAccounts(){
   function getKontostand(emp){
     const empAccs=accounts.filter(function(a){return a.employee_id===emp.id;}).sort(function(a,b){return b.year-a.year||b.month-a.month;});
     if(!empAccs.length) return {stand:0, empAccs};
-    // Kontostand = Summe aller Salden (kumulativ)
-    const totalBalance=Math.round(empAccs.reduce(function(sum,a){return sum+(a.balance||0);},0)*100)/100;
-    return {stand:totalBalance, empAccs};
+    // Kontostand = neuester Eintrag (bereits kumulativ durch _execAbschluss gespeichert)
+    return {stand:Math.round(empAccs[0].balance*100)/100, empAccs};
   }
 
   function renderPage(){
@@ -2682,8 +2679,8 @@ async function _execAbschluss(empId, nettoH, sollH){
   // Saldo dieser Periode = gearbeitet - abgerechnet
   const periodBalance=Math.round((nettoH-manualBilled)*100)/100;
   // Neuer Kontostand = Summe aller bisherigen Salden + dieser Periode
-  const {data:existingAccs}=await sb.from('time_accounts').select('balance').eq('employee_id',empId);
-  const prevTotal=(existingAccs||[]).reduce(function(s,a){return s+(a.balance||0);},0);
+  const {data:existingAccs}=await sb.from('time_accounts').select('balance,year,month').eq('employee_id',empId).order('year',{ascending:false}).order('month',{ascending:false}).limit(1);
+  const prevTotal=(existingAccs&&existingAccs.length)?existingAccs[0].balance:0;
   const newBalance=Math.round((prevTotal+periodBalance)*100)/100;
   const to=new Date(window._billTo||new Date());
   const year=to.getFullYear(), month=to.getMonth()+1;
