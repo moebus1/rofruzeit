@@ -2287,17 +2287,42 @@ async function renderSettings(){
 }
 
 // ── QR ADMIN PAGE ─────────────────────────────────────────────────────────────
+function _genToken(){
+  const arr=new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
 async function renderQRAdmin(){
-  const stampURL=window.location.origin+window.location.pathname+'?stamp=1';
+  // Load current token from DB
+  let currentToken='';
+  try{
+    const {data:tk}=await sb.from('app_settings').select('*').eq('key','qr_token').maybeSingle();
+    if(tk&&tk.value) currentToken=tk.value;
+  }catch(e){}
+
+  // If no token yet, generate one automatically
+  if(!currentToken){
+    currentToken=_genToken();
+    try{
+      await sb.from('app_settings').upsert({key:'qr_token',value:currentToken},{onConflict:'key'});
+    }catch(e){}
+  }
+
+  const stampURL=window.location.origin+window.location.pathname+'?stamp='+currentToken;
   const qrURL='https://api.qrserver.com/v1/create-qr-code/?size=300x300&data='+encodeURIComponent(stampURL);
+
   document.getElementById('page-content').innerHTML=
     '<div class="page-header">'
     +'<div class="page-title">📲 QR-Stempel</div>'
     +'<div class="page-sub">Zum Ein- und Ausstempeln vor Ort aufhängen</div>'
     +'</div>'
+
+    // QR Code card
     +'<div class="card" style="text-align:center;max-width:480px;margin:0 auto">'
-    +'<div style="font-size:14px;font-weight:600;color:var(--s700);margin-bottom:16px">QR-Code zum Stempeln</div>'
-    +'<img src="'+qrURL+'" style="width:260px;height:260px;border-radius:12px;border:3px solid var(--g200)" alt="QR Code">'
+    +'<div style="font-size:14px;font-weight:600;color:var(--s700);margin-bottom:16px">Aktueller QR-Code</div>'
+    +'<div id="qr-img-wrap"><img id="qr-img" src="'+qrURL+'" style="width:260px;height:260px;border-radius:12px;border:3px solid var(--g200)" alt="QR Code"></div>'
+    +'<div style="margin-top:12px;background:var(--s50);border-radius:8px;padding:8px 12px;font-size:11px;color:var(--s400);font-family:var(--mono);word-break:break-all">'+stampURL+'</div>'
     +'<div style="margin-top:16px;font-size:13px;color:var(--s500);line-height:1.6">'
     +'Mitarbeiter scannen diesen Code mit dem Smartphone.<br>'
     +'Beim ersten Scan: <strong style="color:var(--g700)">Einstempeln</strong><br>'
@@ -2307,27 +2332,39 @@ async function renderQRAdmin(){
     +'<button class="btn-sm btn-green" onclick="openQRPrint()">🖨️ QR-Code drucken</button>'
     +'<button class="btn-sm btn-outline" onclick="copyQRLink()">🔗 Link kopieren</button>'
     +'</div></div>'
-    +'<div class="card" style="max-width:480px;margin:16px auto 0">'
-    +'<div class="card-title">ℹ️ So funktioniert es</div>'
-    +'<div style="font-size:13px;color:var(--s600);line-height:1.8">'
-    +'<div>1. QR-Code ausdrucken und am Eingang aufhängen</div>'
-    +'<div>2. Mitarbeiter öffnen die App auf dem Smartphone</div>'
-    +'<div>3. QR-Code scannen → automatisch ein- oder ausstempeln</div>'
-    +'<div>4. Erster Scan = Einstempeln, zweiter Scan = Ausstempeln</div>'
-    +'</div></div>'
-    +'<div style="background:var(--s50);border-radius:12px;padding:14px;max-width:480px;margin:0 auto;font-size:12px;color:var(--s500)">'
-    +'<strong>Stempel-URL:</strong> <span style="font-family:var(--mono);word-break:break-all">'+stampURL+'</span>'
+
+    // New token card
+    +'<div class="card" style="max-width:480px;margin:16px auto 0;border-color:var(--a400);background:var(--a50)">'
+    +'<div class="card-title">🔄 Neuen QR-Code generieren</div>'
+    +'<p style="font-size:13px;color:var(--s600);margin-bottom:14px;line-height:1.6">'
+    +'Wenn ein Mitarbeiter den alten Link kennt und von zuhause stempelt, hier einfach einen neuen Code generieren. '
+    +'Der alte Link funktioniert dann sofort nicht mehr.'
+    +'</p>'
+    +'<button class="btn-sm btn-amber" onclick="regenerateQRToken()" style="font-size:13px;padding:10px 18px">🔑 Neuen QR-Code generieren</button>'
+    +'<div id="qr-regen-msg" style="margin-top:10px;font-size:13px"></div>'
     +'</div>'
+
+    // Time window card
     +'<div class="card" style="max-width:480px;margin:16px auto 0">'
     +'<div class="card-title">⏰ Stempel-Zeitfenster</div>'
-    +'<p style="font-size:13px;color:var(--s500);margin-bottom:12px">QR-Stempel ist nur in diesem Zeitraum möglich – verhindert Stempeln von zuhause.</p>'
+    +'<p style="font-size:13px;color:var(--s500);margin-bottom:12px">QR-Stempel ist nur in diesem Zeitraum möglich – zusätzlicher Schutz gegen Stempeln außerhalb der Arbeitszeit.</p>'
     +'<div class="two-col">'
     +'<div class="form-group"><label class="form-label">Von</label><input class="form-input" type="time" id="sw-from" value="05:00"></div>'
     +'<div class="form-group"><label class="form-label">Bis</label><input class="form-input" type="time" id="sw-to" value="22:00"></div>'
     +'</div>'
     +'<button class="btn-sm btn-green" onclick="saveStampWindow()">Zeitfenster speichern</button>'
     +'<div id="sw-msg" style="margin-top:8px;font-size:13px"></div>'
-    +'</div>';
+    +'</div>'
+
+    // How it works
+    +'<div class="card" style="max-width:480px;margin:16px auto 0">'
+    +'<div class="card-title">ℹ️ So funktioniert der Schutz</div>'
+    +'<div style="font-size:13px;color:var(--s600);line-height:1.9">'
+    +'<div>1. QR-Code ausdrucken und am Eingang aufhängen</div>'
+    +'<div>2. Mitarbeiter öffnen die App und scannen den Code</div>'
+    +'<div>3. Der Code enthält ein geheimes Token – nur der aktuelle Code funktioniert</div>'
+    +'<div>4. Bei Verdacht: neuen Code generieren → alter Link ungültig</div>'
+    +'</div></div>';
 
   // Load current stamp window
   try{
@@ -2350,10 +2387,31 @@ async function renderQRAdmin(){
       await sb.from('app_settings').upsert({key:'stamp_window',value:val},{onConflict:'key'});
       document.getElementById('sw-msg').innerHTML='<span style="color:var(--g600)">✅ Zeitfenster gespeichert: '+from+' – '+to+' Uhr</span>';
     }catch(e){
-      // Table might not exist yet - create it
-      document.getElementById('sw-msg').innerHTML='<span style="color:var(--a600)">Bitte erst die app_settings Tabelle anlegen (SQL unten).</span>';
+      document.getElementById('sw-msg').innerHTML='<span style="color:var(--r600)">Fehler beim Speichern.</span>';
     }
   };
+
+  window.regenerateQRToken=async function(){
+    const msg=document.getElementById('qr-regen-msg');
+    msg.innerHTML='<span style="color:var(--s400)">Generiere neues Token…</span>';
+    const newToken=_genToken();
+    try{
+      await sb.from('app_settings').upsert({key:'qr_token',value:newToken},{onConflict:'key'});
+      const newURL=window.location.origin+window.location.pathname+'?stamp='+newToken;
+      const newQR='https://api.qrserver.com/v1/create-qr-code/?size=300x300&data='+encodeURIComponent(newURL);
+      document.getElementById('qr-img').src=newQR;
+      document.getElementById('qr-img').previousSibling&&null;
+      // Update URL display
+      const urlDisplay=document.querySelector('#qr-img-wrap + div');
+      if(urlDisplay) urlDisplay.textContent=newURL;
+      msg.innerHTML='<span style="color:var(--g600)">✅ Neuer QR-Code aktiv! Alten Code bitte ersetzen.</span>';
+      // Update print/copy functions with new URL
+      window._currentStampURL=newURL;
+    }catch(e){
+      msg.innerHTML='<span style="color:var(--r600)">Fehler: '+e.message+'</span>';
+    }
+  };
+  window._currentStampURL=stampURL;
 }
 
 // ── EDIT TIMES (Admin/Planner) ────────────────────────────────────────────────
@@ -2576,7 +2634,7 @@ async function renderRecurringShifts(){
 
 
 function openQRPrint(){ const u=document.querySelector('[alt="QR Code"]')?.src; if(u) window.open(u,'_blank'); }
-function copyQRLink(){ const u=window.location.origin+window.location.pathname+'?stamp=1'; navigator.clipboard.writeText(u).then(function(){alert('Link kopiert!');}); }
+function copyQRLink(){ const u=window._currentStampURL||(window.location.origin+window.location.pathname+'?stamp=1'); navigator.clipboard.writeText(u).then(function(){alert('Link kopiert!');}).catch(function(){alert('Link: '+u);}); }
 
 // ── SAFE NETTO CALC ──────────────────────────────────────────────────────────
 function calcNettoMins(entry, breaks){
@@ -2964,8 +3022,30 @@ async function applyRecurring(yr,mo){
 async function handleQRStamp(){
   const params=new URLSearchParams(window.location.search);
   if(!params.has('stamp')) return;
+  const stampParam=params.get('stamp');
   window.history.replaceState({},'',window.location.pathname);
   if(!currentUser||!currentProfile||currentProfile.role!=='employee') return;
+
+  // Token-Prüfung: stamp-Parameter mit gespeichertem Token vergleichen
+  try{
+    const {data:tk}=await sb.from('app_settings').select('value').eq('key','qr_token').maybeSingle();
+    const validToken=tk&&tk.value;
+    // Altes Format: stamp=1 (kein Token-Schutz, rückwärtskompatibel nur wenn kein Token gesetzt)
+    if(validToken && stampParam!==validToken){
+      document.getElementById('page-content').innerHTML=
+        '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;text-align:center;padding:24px">'
+        +'<div style="font-size:80px;margin-bottom:16px">🚫</div>'
+        +'<div style="font-size:22px;font-weight:700;color:var(--r600);margin-bottom:8px">Ungültiger QR-Code</div>'
+        +'<div style="font-size:15px;color:var(--s500);max-width:280px;line-height:1.5">'
+        +'Dieser QR-Code ist nicht mehr gültig.<br><br>'
+        +'Bitte den aktuellen QR-Code am Eingang scannen.'
+        +'</div></div>';
+      navigateTo('dashboard');
+      return;
+    }
+  }catch(e){
+    // Bei Fehler: Token-Prüfung überspringen (fail open – Stempeln erlaubt)
+  }
   // Check stamp time window – fetch from settings or use default 05:00-22:00
   const now=new Date();
   const nowMins=now.getHours()*60+now.getMinutes();
