@@ -2008,11 +2008,11 @@ async function renderTimeAccounts(){
   const now=new Date();
   const curY=now.getFullYear(), curM=now.getMonth()+1;
 
-  // Default: 15th prev month to 15th this month
+  // Default: 15th prev month to 14th this month (kein Doppelzählen des 15.)
   const prevM15Y=curM===1?curY-1:curY;
   const prevM15M=curM===1?12:curM-1;
   const defFrom=prevM15Y+'-'+pad(prevM15M)+'-15';
-  const defTo=curY+'-'+pad(curM)+'-15';
+  const defTo=curY+'-'+pad(curM)+'-14';
 
   const [empRes,accountsRes,entriesRes,breaksRes,vacRes]=await Promise.all([
     sb.from('profiles').select('*').eq('employee_type','account'),
