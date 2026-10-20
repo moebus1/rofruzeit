@@ -1597,9 +1597,13 @@ async function renderReports(){
     // Summary table
     var rows='<div class="card"><table><thead><tr>'
       +'<th>Mitarbeiter</th><th>Abteilung</th><th>Buchungen</th>'
-      +'<th>Brutto-Stunden</th><th>Pause</th><th>Netto-Stunden</th><th>Urlaub</th><th>Gesamt (inkl. Urlaub)</th><th title="Durchschnittliche Arbeitstage/Woche anhand gestempelter Zeiten">Ø Tage/Wo (ist)</th>'
+      +'<th>Brutto</th><th>Pause</th><th>Netto</th>'
+      +'<th style="color:#7c3aed">🏖️ Urlaub</th>'
+      +'<th style="color:#b45309">🤒 Krank</th>'
+      +'<th>Gesamt</th>'
+      +'<th title="Durchschnittliche Arbeitstage/Woche anhand gestempelter Zeiten">Ø Tage/Wo</th>'
       +'</tr></thead><tbody>';
-    var totalBrutto=0, totalNetto=0, totalPause=0;
+    var totalBrutto=0, totalNetto=0, totalPause=0, totalVacMinsAll=0, totalSickMinsAll=0;
     employees.forEach(function(emp){
       const ee=filtered.filter(function(e){return e.employee_id===emp.id;});
       const bb=filteredBreaks.filter(function(b){return b.employee_id===emp.id;});
@@ -1609,34 +1613,43 @@ async function renderReports(){
         const eBreaks=bb.filter(function(b){return b.date===e.date;});
         return sum+calcNettoMins(e,eBreaks);
       },0);
-      // Vacation credit (same logic as billing)
-      const empVac=(vacations||[]).filter(function(v){return v.employee_id===emp.id&&v.date_from<=repTo&&v.date_to>=repFrom;});
+      const dailyMins=(emp.weekly_hours||0)/(emp.avg_work_days_per_week||5)*60;
+      // Vacation credit
+      const empVacOnly=(vacations||[]).filter(function(v){return v.employee_id===emp.id&&v.type!=='sick'&&v.date_from<=repTo&&v.date_to>=repFrom;});
       let vacDays=0;
-      empVac.forEach(function(v){
+      empVacOnly.forEach(function(v){
         let cur=new Date(Math.max(new Date(v.date_from),new Date(repFrom)));
         const end2=new Date(Math.min(new Date(v.date_to),new Date(repTo)));
         while(cur<=end2){const d=cur.getDay();if(d!==0&&d!==6)vacDays++;cur.setDate(cur.getDate()+1);}
       });
-      const dailyMins=(emp.weekly_hours||0)/(emp.avg_work_days_per_week||5)*60; // use individual setting
+      // Sick credit
+      const empSick=(vacations||[]).filter(function(v){return v.employee_id===emp.id&&v.type==='sick'&&v.date_from<=repTo&&v.date_to>=repFrom;});
+      let sickDays=0;
+      empSick.forEach(function(v){
+        let cur=new Date(Math.max(new Date(v.date_from),new Date(repFrom)));
+        const end2=new Date(Math.min(new Date(v.date_to),new Date(repTo)));
+        while(cur<=end2){const d=cur.getDay();if(d!==0&&d!==6)sickDays++;cur.setDate(cur.getDate()+1);}
+      });
       const vacMins=vacDays*dailyMins;
-      const gesamt=netto+vacMins;
+      const sickMins=sickDays*dailyMins;
+      const gesamt=netto+vacMins+sickMins;
       totalBrutto+=brutto; totalPause+=pauseMins; totalNetto+=netto;
-      // Calculate actual avg work days per week from stamped entries
+      totalVacMinsAll+=vacMins; totalSickMinsAll+=sickMins;
       const periodDays=Math.max(1,Math.round((new Date(repTo)-new Date(repFrom))/86400000)+1);
       const periodWeeks=periodDays/7;
-      // Count unique work days
       const uniqueDays=new Set(ee.map(function(e){return e.date;})).size;
       const avgDaysActual=periodWeeks>0?Math.round(uniqueDays/periodWeeks*10)/10:0;
       const configuredDays=emp.avg_work_days_per_week||5;
       const diffDays=Math.round((avgDaysActual-configuredDays)*10)/10;
       rows+='<tr>'
         +'<td><strong>'+emp.name+'</strong></td>'
-        +'<td>'+( emp.department||'—')+'</td>'
+        +'<td>'+(emp.department||'—')+'</td>'
         +'<td style="text-align:center">'+ee.length+'</td>'
         +'<td class="text-mono">'+fmtMins(brutto)+'</td>'
         +'<td class="text-mono" style="color:var(--s400)">'+fmtMins(pauseMins)+'</td>'
         +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(netto)+'</strong></td>'
-        +'<td class="text-mono" style="color:#7c3aed">'+(vacMins>0?'+'+fmtMins(vacMins):'—')+'</td>'
+        +'<td class="text-mono" style="color:#7c3aed">'+(vacMins>0?vacDays+'d / +'+fmtMins(vacMins):'—')+'</td>'
+        +'<td class="text-mono" style="color:#b45309">'+(sickMins>0?sickDays+'d / +'+fmtMins(sickMins):'—')+'</td>'
         +'<td class="text-mono"><strong style="color:var(--g800)">'+fmtMins(gesamt)+'</strong></td>'
         +'<td class="text-mono" style="color:'+(Math.abs(diffDays)>0.5?'var(--a600)':'var(--s600)')
         +'" title="Eingestellt: '+configuredDays+' Tage/Wo">'+avgDaysActual
@@ -1648,6 +1661,10 @@ async function renderReports(){
       +'<td class="text-mono"><strong>'+fmtMins(totalBrutto)+'</strong></td>'
       +'<td class="text-mono" style="color:var(--s400)"><strong>'+fmtMins(totalPause)+'</strong></td>'
       +'<td class="text-mono"><strong style="color:var(--g700)">'+fmtMins(totalNetto)+'</strong></td>'
+      +'<td class="text-mono" style="color:#7c3aed"><strong>'+(totalVacMinsAll>0?'+'+fmtMins(totalVacMinsAll):'—')+'</strong></td>'
+      +'<td class="text-mono" style="color:#b45309"><strong>'+(totalSickMinsAll>0?'+'+fmtMins(totalSickMinsAll):'—')+'</strong></td>'
+      +'<td class="text-mono"><strong style="color:var(--g800)">'+fmtMins(totalNetto+totalVacMinsAll+totalSickMinsAll)+'</strong></td>'
+      +'<td></td>'
       +'</tr>';
     rows+='</tbody></table></div>';
     return rows;
@@ -1735,40 +1752,46 @@ async function renderVacationEmployee(){
 
   const statusBadge=(s)=>s==='approved'?'<span class="badge badge-green">✓ Genehmigt</span>':s==='rejected'?'<span class="badge badge-red">✗ Abgelehnt</span>':'<span class="badge badge-amber">⏳ Ausstehend</span>';
 
+  const totalSickDays = sickOnly.reduce((a,r)=>a+r.days,0);
+  const vacRequests = requests.filter(r=>r.type!=='sick');
+
   document.getElementById('page-content').innerHTML=`
     <div class="page-header">
       <div class="page-header-row">
-        <div><div class="page-title">Urlaub</div><div class="page-sub">Urlaubsanträge stellen & verwalten</div></div>
+        <div><div class="page-title">Urlaub & Krankheit</div><div class="page-sub">Urlaubsanträge stellen & verwalten</div></div>
         <button class="btn-sm btn-green" onclick="openVacationRequest()">+ Urlaub beantragen</button>
       </div>
     </div>
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Jahresurlaub</div><div class="stat-value">${totalDays}</div><div class="stat-sub">Tage gesamt</div></div>
-      <div class="stat-card"><div class="stat-label">Genommen</div><div class="stat-value">${usedDays}</div><div class="stat-sub">Tage verbraucht</div></div>
-      <div class="stat-card"><div class="stat-label">Verbleibend</div><div class="stat-value" style="color:${remaining>5?'var(--g600)':remaining>0?'var(--a600)':'var(--r600)'}">${remaining}</div><div class="stat-sub">Tage übrig</div></div>
+      <div class="stat-card"><div class="stat-label">🏖️ Urlaub genommen</div><div class="stat-value">${usedDays}</div><div class="stat-sub">Tage verbraucht</div></div>
+      <div class="stat-card"><div class="stat-label">Urlaub verbleibend</div><div class="stat-value" style="color:${remaining>5?'var(--g600)':remaining>0?'var(--a600)':'var(--r600)'}">${remaining}</div><div class="stat-sub">Tage übrig</div></div>
+      ${totalSickDays>0?`<div class="stat-card"><div class="stat-label">🤒 Krankheitstage</div><div class="stat-value" style="color:#b45309">${totalSickDays}</div><div class="stat-sub">Tage gesamt</div></div>`:''}
     </div>
-    <div class="card">
-      <div class="card-title">📋 Meine Urlaubsanträge</div>
-      ${vacOnly.length===0&&requests.filter(r=>r.type!=='sick').length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Anträge gestellt.</p>':
-      `<table><thead><tr><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th><th>Status</th></tr></thead><tbody>
-      ${requests.filter(r=>r.type!=='sick').map(r=>`<tr>
-        <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
-        <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
-        <td class="text-mono">${r.days}</td>
-        <td style="color:var(--s400);font-size:12px">${r.note||'—'}</td>
-        <td>${statusBadge(r.status)}</td></tr>`).join('')}
-      </tbody></table>`}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+      <div class="card" style="margin:0">
+        <div class="card-title">🏖️ Meine Urlaubsanträge</div>
+        ${vacRequests.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Anträge gestellt.</p>':
+        `<table><thead><tr><th>Von</th><th>Bis</th><th>Tage</th><th>Status</th></tr></thead><tbody>
+        ${vacRequests.map(r=>`<tr>
+          <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
+          <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
+          <td class="text-mono">${r.days}</td>
+          <td>${statusBadge(r.status)}</td></tr>`).join('')}
+        </tbody></table>`}
+      </div>
+      <div class="card" style="margin:0;border-color:#fcd34d">
+        <div class="card-title">🤒 Krankheitstage</div>
+        ${sickOnly.length===0?'<p style="color:var(--s400);font-size:13px">Keine Krankheitstage eingetragen.</p>':
+        `<table><thead><tr><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th></tr></thead><tbody>
+        ${sickOnly.map(r=>`<tr style="background:rgba(180,83,9,0.04)">
+          <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
+          <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
+          <td class="text-mono" style="color:#b45309;font-weight:600">${r.days}</td>
+          <td style="color:var(--s400);font-size:12px">${r.note||'—'}</td></tr>`).join('')}
+        </tbody></table>`}
+      </div>
     </div>
-    ${sickOnly.length>0?`<div class="card">
-      <div class="card-title">🤒 Krankheitstage</div>
-      <table><thead><tr><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th></tr></thead><tbody>
-      ${sickOnly.map(r=>`<tr>
-        <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
-        <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
-        <td class="text-mono">${r.days}</td>
-        <td style="color:var(--s400);font-size:12px">${r.note||'—'}</td></tr>`).join('')}
-      </tbody></table>
-    </div>`:''}
     `;
 
   window.openVacationRequest=()=>{
