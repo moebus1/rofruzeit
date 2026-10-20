@@ -1089,8 +1089,9 @@ async function renderMyTimes(){
   const entries=fromDate?allEntries.filter(function(e){return e.date>=fromDate;}):allEntries;
   const breaks=fromDate?allBreaks.filter(function(b){return b.date>=fromDate;}):allBreaks;
 
-  // Collect individual vacation days in period
+  // Collect individual vacation/sick days in period
   const vacDaysInPeriod=[];
+  const sickDaysInPeriod=[];
   allVacations.forEach(function(v){
     let d=new Date(v.date_from);
     const end=new Date(v.date_to);
@@ -1098,24 +1099,30 @@ async function renderMyTimes(){
       const ds=d.toISOString().slice(0,10);
       if(!fromDate||ds>=fromDate){
         const dow=d.getDay();
-        if(dow!==0&&dow!==6) vacDaysInPeriod.push({date:ds,requestId:v.id});
+        if(dow!==0&&dow!==6){
+          if(v.type==='sick') sickDaysInPeriod.push({date:ds,requestId:v.id});
+          else vacDaysInPeriod.push({date:ds,requestId:v.id});
+        }
       }
       d.setDate(d.getDate()+1);
     }
   });
-  // Remove vacation days that already have a time_entry (MA stempelte trotz Urlaub)
+  // Remove days that already have a time_entry
   const entryDates=new Set(entries.map(function(e){return e.date;}));
   const vacOnly=vacDaysInPeriod.filter(function(v){return !entryDates.has(v.date);});
+  const sickOnly2=sickDaysInPeriod.filter(function(v){return !entryDates.has(v.date);});
 
   const totalBrutto=entries.reduce(function(a,e){return a+(e.duration_minutes||0);},0);
   const totalBreak=breaks.filter(function(b){return b.pause_end;}).reduce(function(a,b){return a+(b.duration_minutes||0);},0);
   const totalNetto=totalBrutto-totalBreak;
   const totalVacMins=Math.round(vacOnly.length*hoursPerVacDay*60);
+  const totalSickMins=Math.round(sickOnly2.length*hoursPerVacDay*60);
 
-  // Build combined rows: entries + vacation days, sorted by date desc
+  // Build combined rows: entries + vacation days + sick days, sorted by date desc
   const entryRows=entries.map(function(e){return {type:'work',date:e.date,entry:e};});
   const vacRows=vacOnly.map(function(v){return {type:'vacation',date:v.date};});
-  const allRows=[].concat(entryRows,vacRows).sort(function(a,b){return b.date.localeCompare(a.date);});
+  const sickRows=sickOnly2.map(function(v){return {type:'sick',date:v.date};});
+  const allRows=[].concat(entryRows,vacRows,sickRows).sort(function(a,b){return b.date.localeCompare(a.date);});
 
   document.getElementById('page-content').innerHTML=
     '<div class="page-header"><div class="page-title">Meine Arbeitszeiten</div>'
@@ -1124,7 +1131,8 @@ async function renderMyTimes(){
     +'<div class="stat-card"><div class="stat-label">Buchungen</div><div class="stat-value">'+entries.length+'</div></div>'
     +'<div class="stat-card"><div class="stat-label">Netto-Arbeit</div><div class="stat-value text-mono" style="color:var(--g700)">'+fmtMins(totalNetto)+'</div></div>'
     +(vacOnly.length>0?'<div class="stat-card"><div class="stat-label">Urlaubstage</div><div class="stat-value text-mono" style="color:#7c3aed">'+vacOnly.length+' Tag'+(vacOnly.length!==1?'e':'')+'</div><div class="stat-label">= '+fmtMins(totalVacMins)+'</div></div>':'')
-    +'<div class="stat-card"><div class="stat-label">Gesamt (Arbeit+Urlaub)</div><div class="stat-value text-mono" style="color:var(--g700)">'+fmtMins(totalNetto+totalVacMins)+'</div></div>'
+    +(sickOnly2.length>0?'<div class="stat-card"><div class="stat-label">Krankheitstage</div><div class="stat-value text-mono" style="color:#b45309">'+sickOnly2.length+' Tag'+(sickOnly2.length!==1?'e':'')+'</div><div class="stat-label">= '+fmtMins(totalSickMins)+'</div></div>':'')
+    +'<div class="stat-card"><div class="stat-label">Gesamt</div><div class="stat-value text-mono" style="color:var(--g700)">'+fmtMins(totalNetto+totalVacMins+totalSickMins)+'</div></div>'
     +'</div>'
     +'<div class="card">'
     +(allRows.length===0?'<p style="color:var(--s400);font-size:13px">Keine Buchungen seit letzter Abrechnung.</p>'
@@ -1135,6 +1143,14 @@ async function renderMyTimes(){
           +'<td>'+new Date(row.date).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'})+'</td>'
           +'<td colspan="4"><span style="font-size:12px;color:#7c3aed;font-weight:600">🏖️ Urlaub</span></td>'
           +'<td class="text-mono" style="color:#7c3aed;font-weight:600">'+fmtMins(Math.round(hoursPerVacDay*60))+'</td>'
+          +'<td style="font-size:12px;color:var(--s400)">'+hoursPerVacDay+'h/Tag</td>'
+          +'</tr>';
+      }
+      if(row.type==='sick'){
+        return '<tr style="background:rgba(180,83,9,0.06)">'
+          +'<td>'+new Date(row.date).toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'})+'</td>'
+          +'<td colspan="4"><span style="font-size:12px;color:#b45309;font-weight:600">🤒 Krank</span></td>'
+          +'<td class="text-mono" style="color:#b45309;font-weight:600">'+fmtMins(Math.round(hoursPerVacDay*60))+'</td>'
           +'<td style="font-size:12px;color:var(--s400)">'+hoursPerVacDay+'h/Tag</td>'
           +'</tr>';
       }
@@ -1712,7 +1728,9 @@ async function renderVacationEmployee(){
   ]);
   const requests = vacRes.data||[];
   const totalDays = profileRes.data?.vacation_days_per_year||0;
-  const usedDays = requests.filter(r=>r.status==='approved').reduce((a,r)=>a+r.days,0);
+  const vacOnly = requests.filter(r=>r.status==='approved' && r.type!=='sick');
+  const sickOnly = requests.filter(r=>r.status==='approved' && r.type==='sick');
+  const usedDays = vacOnly.reduce((a,r)=>a+r.days,0);
   const remaining = totalDays - usedDays;
 
   const statusBadge=(s)=>s==='approved'?'<span class="badge badge-green">✓ Genehmigt</span>':s==='rejected'?'<span class="badge badge-red">✗ Abgelehnt</span>':'<span class="badge badge-amber">⏳ Ausstehend</span>';
@@ -1730,17 +1748,28 @@ async function renderVacationEmployee(){
       <div class="stat-card"><div class="stat-label">Verbleibend</div><div class="stat-value" style="color:${remaining>5?'var(--g600)':remaining>0?'var(--a600)':'var(--r600)'}">${remaining}</div><div class="stat-sub">Tage übrig</div></div>
     </div>
     <div class="card">
-      <div class="card-title">📋 Meine Anträge</div>
-      ${requests.length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Anträge gestellt.</p>':
+      <div class="card-title">📋 Meine Urlaubsanträge</div>
+      ${vacOnly.length===0&&requests.filter(r=>r.type!=='sick').length===0?'<p style="color:var(--s400);font-size:13px">Noch keine Anträge gestellt.</p>':
       `<table><thead><tr><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th><th>Status</th></tr></thead><tbody>
-      ${requests.map(r=>`<tr>
+      ${requests.filter(r=>r.type!=='sick').map(r=>`<tr>
         <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
         <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
         <td class="text-mono">${r.days}</td>
         <td style="color:var(--s400);font-size:12px">${r.note||'—'}</td>
         <td>${statusBadge(r.status)}</td></tr>`).join('')}
       </tbody></table>`}
-    </div>`;
+    </div>
+    ${sickOnly.length>0?`<div class="card">
+      <div class="card-title">🤒 Krankheitstage</div>
+      <table><thead><tr><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th></tr></thead><tbody>
+      ${sickOnly.map(r=>`<tr>
+        <td>${new Date(r.date_from).toLocaleDateString('de-DE')}</td>
+        <td>${new Date(r.date_to).toLocaleDateString('de-DE')}</td>
+        <td class="text-mono">${r.days}</td>
+        <td style="color:var(--s400);font-size:12px">${r.note||'—'}</td></tr>`).join('')}
+      </tbody></table>
+    </div>`:''}
+    `;
 
   window.openVacationRequest=()=>{
     document.getElementById('modal-container').innerHTML=`
@@ -1801,7 +1830,10 @@ async function renderVacationAdmin(){
   var html='<div class="page-header"><div class="page-header-row">'
     +'<div><div class="page-title">Urlaubsanträge</div>'
     +'<div class="page-sub">Anträge genehmigen, ablehnen oder manuell eintragen</div></div>'
+    +'<div style="display:flex;gap:8px">'
     +'<button class="btn-sm btn-green" onclick="openAddVacationAdmin()">+ Urlaub eintragen</button>'
+    +'<button class="btn-sm btn-amber" onclick="openAddSickDayAdmin()">🤒 Krankheitstage eintragen</button>'
+    +'</div>'
     +'</div></div>';
 
   // Pending
@@ -1828,19 +1860,21 @@ async function renderVacationAdmin(){
   }
 
   // All requests
-  html+='<div class="card"><div class="card-title">📋 Alle Urlaubseinträge</div>';
+  html+='<div class="card"><div class="card-title">📋 Alle Einträge (Urlaub & Krankheit)</div>';
   if(requests.length===0){
     html+='<p style="color:var(--s400);font-size:13px">Noch keine Einträge.</p>';
   } else {
-    html+='<table><thead><tr><th>Mitarbeiter</th><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th><th>Status</th><th></th></tr></thead><tbody>';
+    html+='<table><thead><tr><th>Mitarbeiter</th><th>Art</th><th>Von</th><th>Bis</th><th>Tage</th><th>Notiz</th><th>Status</th><th></th></tr></thead><tbody>';
     requests.forEach(function(r){
+      var isSick=r.type==='sick';
       html+='<tr>'
         +'<td>'+(pMap[r.employee_id]?pMap[r.employee_id].name:'?')+'</td>'
+        +'<td>'+(isSick?'<span style="color:#b45309;font-size:12px;font-weight:600">🤒 Krank</span>':'<span style="color:#15803d;font-size:12px;font-weight:600">🏖️ Urlaub</span>')+'</td>'
         +'<td>'+new Date(r.date_from).toLocaleDateString('de-DE')+'</td>'
         +'<td>'+new Date(r.date_to).toLocaleDateString('de-DE')+'</td>'
         +'<td class="text-mono">'+r.days+'</td>'
         +'<td style="font-size:12px;color:var(--s400)">'+(r.note||'—')+'</td>'
-        +'<td>'+statusBadge(r.status)+'</td>'
+        +'<td>'+(isSick?'<span class="badge badge-amber">✓ Eingetragen</span>':statusBadge(r.status))+'</td>'
         +'<td><button class="btn-sm btn-red" style="font-size:11px;padding:3px 8px" data-vid="'+r.id+'" onclick="deleteVacation(this.dataset.vid)">✕</button></td>'
         +'</tr>';
     });
@@ -1916,6 +1950,63 @@ async function renderVacationAdmin(){
         decided_at:new Date().toISOString()
       });
       if(error){alert('Fehler: '+error.message);return;}
+      closeModal(); renderVacationAdmin();
+    };
+  };
+
+  window.openAddSickDayAdmin=function(){
+    document.getElementById('modal-container').innerHTML=
+      '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+      +'<div class="modal">'
+      +'<div class="modal-title">🤒 Krankheitstage eintragen</div>'
+      +'<div class="form-group"><label class="form-label">Mitarbeiter</label>'
+      +'<select class="form-select" id="sk-emp">'
+      +employees.map(function(e){return '<option value="'+e.id+'">'+e.name+'</option>';}).join('')
+      +'</select></div>'
+      +'<div class="two-col">'
+      +'<div class="form-group"><label class="form-label">Von</label>'
+      +'<input class="form-input" type="date" id="sk-from" value="'+todayStr+'"></div>'
+      +'<div class="form-group"><label class="form-label">Bis</label>'
+      +'<input class="form-input" type="date" id="sk-to" value="'+todayStr+'"></div>'
+      +'</div>'
+      +'<div id="sk-days-info" style="font-size:13px;color:var(--s500);margin-bottom:12px"></div>'
+      +'<div class="form-group"><label class="form-label">Notiz (optional)</label>'
+      +'<input class="form-input" id="sk-note" placeholder="z.B. Arbeitsunfähigkeitsbescheinigung"></div>'
+      +'<div class="modal-footer">'
+      +'<button class="btn-sm btn-outline" onclick="closeModal()">Abbrechen</button>'
+      +'<button class="btn-sm btn-amber" onclick="saveAdminSickDay()">Eintragen</button>'
+      +'</div></div></div>';
+
+    function calcSickDays(){
+      var f=document.getElementById('sk-from').value;
+      var t=document.getElementById('sk-to').value;
+      if(f&&t){
+        var d=0, cur=new Date(f), end=new Date(t);
+        while(cur<=end){if(cur.getDay()!==0&&cur.getDay()!==6)d++;cur.setDate(cur.getDate()+1);}
+        document.getElementById('sk-days-info').textContent='Arbeitstage: '+d+' (Wochenenden nicht gezählt)';
+      }
+    }
+    document.getElementById('sk-from').addEventListener('change',calcSickDays);
+    document.getElementById('sk-to').addEventListener('change',calcSickDays);
+    calcSickDays();
+
+    window.saveAdminSickDay=async function(){
+      var empId=document.getElementById('sk-emp').value;
+      var f=document.getElementById('sk-from').value;
+      var t=document.getElementById('sk-to').value;
+      var note=document.getElementById('sk-note').value;
+      if(!f||!t||t<f){alert('Bitte gültiges Datum wählen.');return;}
+      var d=0, cur=new Date(f), end=new Date(t);
+      while(cur<=end){if(cur.getDay()!==0&&cur.getDay()!==6)d++;cur.setDate(cur.getDate()+1);}
+      var rec={
+        employee_id:empId,date_from:f,date_to:t,
+        days:d,note:note||'Krankheit',
+        status:'approved',type:'sick',
+        decided_by:currentUser.id,
+        decided_at:new Date().toISOString()
+      };
+      var res=await sb.from('vacation_requests').insert(rec);
+      if(res.error){alert('Fehler: '+res.error.message);return;}
       closeModal(); renderVacationAdmin();
     };
   };
